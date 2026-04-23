@@ -43,14 +43,20 @@ EOF
 
 if [ ! -f "$BACKEND_ENV_FILE" ]; then
   cat >"$BACKEND_ENV_FILE" <<EOF
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_TIMEOUT_SECONDS=90
 GROQ_API_KEY=
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-20b
 DOCUMENTS_DIR=$DOCUMENTS_DIR
 CHROMA_HOST=127.0.0.1
 CHROMA_PORT=$CHROMA_PORT
 CHROMA_COLLECTION=nexus_documents
 EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+MAX_DEEPSEEK_CHARS=18000
 CHAT_MEMORY_TURNS=20
+FIREBASE_PROJECT_ID=nexus-98e32
 NEXUS_CORS_ORIGINS=http://localhost:3000,https://nexus-98e32.web.app,https://nexus-98e32.firebaseapp.com,https://nexus.cursar.space
 EOF
 fi
@@ -133,5 +139,5 @@ systemctl --user daemon-reload
 systemctl --user enable --now nexus-chromadb.service nexus-backend.service
 
 echo "Nexus backend and ChromaDB services installed."
-echo "Edit $BACKEND_ENV_FILE to set GROQ_API_KEY if needed."
+echo "Edit $BACKEND_ENV_FILE to set DEEPSEEK_API_KEY and GROQ_API_KEY if needed."
 echo "Run deploy/local/setup-tunnel.sh to create the dedicated Cloudflare tunnel."

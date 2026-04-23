@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-app = FastAPI(title="Nexus API", version="0.2.0")
+app = FastAPI(title="Nexus API", version="0.3.0")
 
 DEFAULT_DOCUMENTS_DIR = "/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS"
 DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", DEFAULT_DOCUMENTS_DIR)).expanduser()
@@ -26,8 +27,13 @@ USERS_DIR = DOCUMENTS_DIR / "users"
 for directory in (DOCUMENTS_DIR, USERS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_TIMEOUT_SECONDS = int(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "90"))
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
 CHROMA_COLLECTION_PREFIX = os.getenv("CHROMA_COLLECTION", "nexus_documents")
@@ -35,7 +41,7 @@ EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "nexus-98e32")
-MAX_GROQ_CHARS = int(os.getenv("MAX_GROQ_CHARS", "18000"))
+MAX_DEEPSEEK_CHARS = int(os.getenv("MAX_DEEPSEEK_CHARS", "18000"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
 CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
@@ -145,12 +151,24 @@ class AuthenticatedUserProfile(BaseModel):
     collection_name: str
 
 
-def warn_missing_groq_key() -> None:
+class LookupIntent(BaseModel):
+    is_specific_document_request: bool = False
+    search_terms: list[str] = Field(default_factory=list)
+    title_or_filename: str | None = None
+    classification: str | None = None
+    year: str | None = None
+    project: str | None = None
+    folder_hint: str | None = None
+
+
+def warn_missing_provider_keys() -> None:
+    if not DEEPSEEK_API_KEY:
+        print("DEEPSEEK_API_KEY not configured. File classification will use fallback providers.")
     if not GROQ_API_KEY:
-        print("GROQ_API_KEY not configured. AI classification and chat will not work.")
+        print("GROQ_API_KEY not configured. Chat and Groq lookup will not work.")
 
 
-warn_missing_groq_key()
+warn_missing_provider_keys()
 
 
 def require_authenticated_user(authorization: str | None = Header(default=None)) -> AuthenticatedUserContext:
@@ -165,8 +183,20 @@ async def health_check() -> dict[str, Any]:
         "status": "ok",
         "documents_dir": str(DOCUMENTS_DIR),
         "users_dir": str(USERS_DIR),
-        "groq_configured": bool(GROQ_API_KEY),
         "firebase_project_id": FIREBASE_PROJECT_ID,
+        "providers": {
+            "deepseek": {
+                "configured": bool(DEEPSEEK_API_KEY),
+                "model": DEEPSEEK_MODEL,
+                "base_url": DEEPSEEK_BASE_URL,
+                "role": "classification",
+            },
+            "groq": {
+                "configured": bool(GROQ_API_KEY),
+                "model": GROQ_MODEL,
+                "role": "chat_and_lookup",
+            },
+        },
         "chroma": {
             "host": CHROMA_HOST,
             "port": CHROMA_PORT,
@@ -213,7 +243,7 @@ async def upload_document(
         staging_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
 
-    ai_result = analyze_document_with_groq(markdown_text, original_name)
+    ai_result = analyze_document_with_deepseek(markdown_text, original_name)
     file_plan = build_file_plan(current_user, ai_result, original_name, document_id)
 
     file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
@@ -263,7 +293,12 @@ async def upload_document(
     )
     append_manifest_record(current_user, record)
 
-    return {**record, "duplicate": False, "metadata": ai_result.get("metadata", {})}
+    return {
+        **record,
+        "duplicate": False,
+        "metadata": ai_result.get("metadata", {}),
+        "classification_provider": ai_result.get("provider", "heuristic"),
+    }
 
 
 @app.get("/documents", response_model=list[DocumentRecord])
@@ -281,7 +316,7 @@ async def search_semantic(
     limit: int = Query(default=5, ge=1, le=20),
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> list[SearchResult]:
-    return semantic_search(current_user=current_user, query=query, limit=limit)
+    return hybrid_search(current_user=current_user, query=query, limit=limit)
 
 
 @app.post("/chat")
@@ -291,7 +326,18 @@ async def chat(
 ) -> dict[str, Any]:
     ensure_groq_configured()
 
-    references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
+    lookup_references = lookup_specific_documents_with_groq(
+        current_user=current_user,
+        user_message=request.message,
+        limit=request.limit,
+    )
+    semantic_references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
+    references = merge_search_results(
+        [lookup_references, semantic_references],
+        limit=request.limit,
+        dedupe_by_document=True,
+    )
+
     context = build_rag_context(current_user, references)
     session_id = safe_session_id(request.session_id)
     persistent_history = load_session_memory(current_user, session_id)
@@ -381,6 +427,15 @@ def safe_slug(value: str, fallback: str = "documento") -> str:
     value = re.sub(r"[^a-z0-9]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
     return value or fallback
+
+
+def normalize_search_text(value: str) -> str:
+    return safe_slug(value, fallback="")
+
+
+def tokenize_search_terms(value: str) -> list[str]:
+    normalized = normalize_search_text(value)
+    return [token for token in normalized.split("-") if len(token) >= 2]
 
 
 def safe_session_id(value: str) -> str:
@@ -540,7 +595,7 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
 def extract_pdf_markdown(pdf_path: Path) -> str:
     try:
         from docling.document_converter import DocumentConverter
-    except Exception as exc:  # pragma: no cover - import depends on runtime install
+    except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Docling is not available: {exc}") from exc
 
     try:
@@ -565,6 +620,97 @@ def get_groq_client():
     return groq_client
 
 
+def deepseek_chat_completion(
+    messages: list[dict[str, str]],
+    *,
+    response_format: dict[str, str] | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 1200,
+) -> str:
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY is not configured.")
+
+    payload: dict[str, Any] = {
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if response_format is not None:
+        payload["response_format"] = response_format
+
+    response = requests.post(
+        f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=DEEPSEEK_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return str(data["choices"][0]["message"]["content"] or "{}")
+
+
+def analyze_document_with_deepseek(markdown_text: str, original_name: str) -> dict[str, Any]:
+    prompt = {
+        "task": (
+            "Classify and summarize this document for a private multi-user document-management and RAG system. "
+            "Prefer folder paths that help file separation by topic/project/year/type."
+        ),
+        "filename": original_name,
+        "required_json_schema": {
+            "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
+            "suggested_name": "[AAAA] Tipo - Titulo.md",
+            "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
+            "metadata": {
+                "title": "string",
+                "author": "string or null",
+                "date": "YYYY-MM-DD or YYYY or null",
+                "project": "project/client/product name or null",
+                "technologies": ["string"],
+                "tags": ["string"],
+                "summary": "short string",
+            },
+        },
+        "document_excerpt": markdown_text[:MAX_DEEPSEEK_CHARS],
+    }
+
+    if DEEPSEEK_API_KEY:
+        try:
+            raw = deepseek_chat_completion(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Return only valid JSON. Do not include markdown fences. "
+                            "If data is unknown, use null or an empty list."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=1200,
+            )
+            parsed = json.loads(raw)
+            result = normalize_ai_result(parsed, original_name)
+            result["provider"] = "deepseek"
+            return result
+        except Exception as exc:
+            print(f"DeepSeek analysis failed, trying fallback provider: {exc}")
+
+    if GROQ_API_KEY:
+        fallback = analyze_document_with_groq(markdown_text, original_name)
+        fallback["provider"] = "groq_fallback"
+        return fallback
+
+    fallback = fallback_document_analysis(markdown_text, original_name)
+    fallback["provider"] = "heuristic"
+    return fallback
+
+
 def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[str, Any]:
     if not GROQ_API_KEY:
         return fallback_document_analysis(markdown_text, original_name)
@@ -586,32 +732,27 @@ def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[s
                 "summary": "short string",
             },
         },
-        "document_excerpt": markdown_text[:MAX_GROQ_CHARS],
+        "document_excerpt": markdown_text[:MAX_DEEPSEEK_CHARS],
     }
 
-    try:
-        client = get_groq_client()
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Return only valid JSON. Do not include markdown fences. "
-                        "If data is unknown, use null or an empty list."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-        raw = response.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-        return normalize_ai_result(parsed, original_name)
-    except Exception as exc:
-        print(f"Groq analysis failed, using fallback: {exc}")
-        return fallback_document_analysis(markdown_text, original_name)
+    client = get_groq_client()
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return only valid JSON. Do not include markdown fences. "
+                    "If data is unknown, use null or an empty list."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ],
+        temperature=0.1,
+        response_format={"type": "json_object"},
+    )
+    raw = response.choices[0].message.content or "{}"
+    return normalize_ai_result(json.loads(raw), original_name)
 
 
 def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str, Any]:
@@ -692,7 +833,6 @@ def resolve_folder_parts(ai_result: dict[str, Any], classification: str, year: s
     project = safe_slug(str(metadata.get("project") or ""), "")
     technologies = normalize_string_list(metadata.get("technologies"))
     area = safe_slug(technologies[0], "") if technologies else ""
-
     fallback_parts = [part for part in [area, project, year, classification] if part]
     return fallback_parts or [classification, year]
 
@@ -706,7 +846,6 @@ def sanitize_relative_folder(value: str) -> list[str]:
         slug = safe_slug(raw_part, "")
         if slug:
             parts.append(slug[:60])
-
     return parts[:4]
 
 
@@ -916,18 +1055,130 @@ def build_chroma_metadata(
     }
 
 
+def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "document_id": str(record.get("document_id") or ""),
+        "title": str(record.get("title") or ""),
+        "original_name": str(record.get("original_name") or ""),
+        "suggested_name": str(record.get("suggested_name") or ""),
+        "classification": str(record.get("classification") or ""),
+        "year": str(record.get("year") or ""),
+        "project": str(record.get("project") or ""),
+        "folder_path": str(record.get("folder_path") or ""),
+        "tags": json.dumps(record.get("tags") or [], ensure_ascii=False),
+        "summary": str(record.get("summary") or ""),
+        "markdown_path": str(record.get("markdown_path") or ""),
+        "pdf_path": str(record.get("pdf_path") or ""),
+    }
+
+
+def manifest_search_result(record: dict[str, Any], score: float) -> SearchResult:
+    metadata = record_metadata_payload(record)
+    return SearchResult(
+        document_id=str(record.get("document_id") or ""),
+        chunk_id=f"{record.get('document_id')}:manifest",
+        score=score,
+        snippet=str(record.get("summary") or record.get("suggested_name") or record.get("original_name") or "")[:800],
+        metadata=metadata,
+        markdown_path=record.get("markdown_path"),
+        pdf_path=record.get("pdf_path"),
+        classification=record.get("classification"),
+        suggested_name=record.get("suggested_name"),
+    )
+
+
+def metadata_search(
+    current_user: AuthenticatedUserContext,
+    query: str,
+    limit: int = 5,
+    lookup_intent: LookupIntent | None = None,
+) -> list[SearchResult]:
+    records = read_manifest_records(current_user)
+    if not records:
+        return []
+
+    terms = list(lookup_intent.search_terms if lookup_intent else [])
+    if lookup_intent and lookup_intent.title_or_filename:
+        terms.append(lookup_intent.title_or_filename)
+    terms.extend(tokenize_search_terms(query))
+    normalized_terms = []
+    for term in terms:
+        normalized_terms.extend(tokenize_search_terms(term))
+    normalized_terms = list(dict.fromkeys(normalized_terms))
+    if not normalized_terms:
+        return []
+
+    results: list[tuple[float, dict[str, Any]]] = []
+    for record in records:
+        title = normalize_search_text(str(record.get("title") or ""))
+        original_name = normalize_search_text(str(record.get("original_name") or ""))
+        suggested_name = normalize_search_text(str(record.get("suggested_name") or ""))
+        project = normalize_search_text(str(record.get("project") or ""))
+        folder_path = normalize_search_text(str(record.get("folder_path") or ""))
+        classification = normalize_search_text(str(record.get("classification") or ""))
+        year = str(record.get("year") or "").strip()
+        tags = " ".join(str(item) for item in record.get("tags") or [])
+        tags_normalized = normalize_search_text(tags)
+        summary = normalize_search_text(str(record.get("summary") or ""))
+
+        score = 0.0
+        for term in normalized_terms:
+            if term and term in original_name:
+                score += 5.0
+            if term and term in suggested_name:
+                score += 4.5
+            if term and term in title:
+                score += 4.0
+            if term and term in project:
+                score += 2.5
+            if term and term in folder_path:
+                score += 2.0
+            if term and term in tags_normalized:
+                score += 1.8
+            if term and term in classification:
+                score += 1.5
+            if term and term in summary:
+                score += 1.0
+
+        if lookup_intent:
+            if lookup_intent.classification:
+                requested_classification = normalize_search_text(lookup_intent.classification)
+                if requested_classification and requested_classification == classification:
+                    score += 3.0
+            if lookup_intent.year and lookup_intent.year == year:
+                score += 3.0
+            if lookup_intent.project:
+                requested_project = normalize_search_text(lookup_intent.project)
+                if requested_project and requested_project in project:
+                    score += 2.5
+            if lookup_intent.folder_hint:
+                requested_folder = normalize_search_text(lookup_intent.folder_hint)
+                if requested_folder and requested_folder in folder_path:
+                    score += 2.0
+
+        if score > 0:
+            results.append((score, record))
+
+    results.sort(key=lambda item: (item[0], str(item[1].get("uploaded_at") or "")), reverse=True)
+    return [manifest_search_result(record, score) for score, record in results[:limit]]
+
+
 def semantic_search(
     current_user: AuthenticatedUserContext,
     query: str,
     limit: int = 5,
 ) -> list[SearchResult]:
-    collection = get_chroma_collection(current_user.collection_name)
-    query_embedding = embed_texts([query])[0]
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=limit,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        collection = get_chroma_collection(current_user.collection_name)
+        query_embedding = embed_texts([query])[0]
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=limit,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as exc:
+        print(f"Semantic search failed: {exc}")
+        return []
 
     ids = results.get("ids", [[]])[0]
     documents = results.get("documents", [[]])[0]
@@ -956,6 +1207,114 @@ def semantic_search(
             )
         )
     return output
+
+
+def merge_search_results(
+    result_groups: list[list[SearchResult]],
+    *,
+    limit: int,
+    dedupe_by_document: bool = False,
+) -> list[SearchResult]:
+    merged: list[SearchResult] = []
+    seen: set[str] = set()
+    for group in result_groups:
+        for result in group:
+            key = result.document_id if dedupe_by_document else f"{result.document_id}:{result.chunk_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(result)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def hybrid_search(
+    current_user: AuthenticatedUserContext,
+    query: str,
+    limit: int = 5,
+) -> list[SearchResult]:
+    metadata_results = metadata_search(current_user=current_user, query=query, limit=limit)
+    semantic_results = semantic_search(current_user=current_user, query=query, limit=limit)
+    return merge_search_results([metadata_results, semantic_results], limit=limit)
+
+
+def extract_lookup_intent_with_groq(user_message: str) -> LookupIntent:
+    if not GROQ_API_KEY:
+        return LookupIntent()
+
+    client = get_groq_client()
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You extract document lookup intent for a private document archive. "
+                    "Return only valid JSON. Decide whether the user is asking for a specific file/document/PDF. "
+                    "Use null for unknown singular fields and [] for missing term lists."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "user_message": user_message,
+                        "required_json_schema": {
+                            "is_specific_document_request": "boolean",
+                            "search_terms": ["string"],
+                            "title_or_filename": "string or null",
+                            "classification": "string or null",
+                            "year": "string or null",
+                            "project": "string or null",
+                            "folder_hint": "string or null",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    raw = response.choices[0].message.content or "{}"
+    parsed = json.loads(raw)
+    return LookupIntent(
+        is_specific_document_request=bool(parsed.get("is_specific_document_request")),
+        search_terms=normalize_string_list(parsed.get("search_terms")),
+        title_or_filename=str(parsed.get("title_or_filename")).strip()
+        if parsed.get("title_or_filename")
+        else None,
+        classification=str(parsed.get("classification")).strip() if parsed.get("classification") else None,
+        year=str(parsed.get("year")).strip() if parsed.get("year") else None,
+        project=str(parsed.get("project")).strip() if parsed.get("project") else None,
+        folder_hint=str(parsed.get("folder_hint")).strip() if parsed.get("folder_hint") else None,
+    )
+
+
+def lookup_specific_documents_with_groq(
+    current_user: AuthenticatedUserContext,
+    user_message: str,
+    limit: int = 5,
+) -> list[SearchResult]:
+    try:
+        intent = extract_lookup_intent_with_groq(user_message)
+    except Exception as exc:
+        print(f"Groq lookup extraction failed, falling back to local metadata search: {exc}")
+        intent = LookupIntent(
+            is_specific_document_request=False,
+            search_terms=tokenize_search_terms(user_message),
+        )
+
+    if not intent.is_specific_document_request and not intent.search_terms:
+        return []
+
+    return metadata_search(
+        current_user=current_user,
+        query=user_message,
+        limit=limit,
+        lookup_intent=intent,
+    )
 
 
 def is_path_within(base: Path, path: Path) -> bool:
@@ -1000,6 +1359,7 @@ def build_chat_messages(
     system_prompt = (
         "You are Nexus, a precise assistant for a private document archive. "
         "Each authenticated user has a fully isolated workspace with isolated documents and memory. "
+        "DeepSeek organizes incoming files, while you on Groq help locate the right document and answer quickly. "
         "Answer in the user's language. Use only the supplied context when citing documents. "
         "If the context is insufficient, say what is missing. Include concise references. "
         "Use the persistent session memory to preserve user preferences and prior conclusions."

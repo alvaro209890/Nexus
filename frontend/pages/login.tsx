@@ -70,8 +70,8 @@ export default function LoginPage() {
 
           <div className="mt-12 grid gap-3 sm:grid-cols-3">
             <LoginFeature value="PDF" label="Docling" />
-            <LoginFeature value="RAG" label="ChromaDB" />
-            <LoginFeature value="IA" label="Groq" />
+            <LoginFeature value="AI" label="DeepSeek" />
+            <LoginFeature value="RAG" label="Groq" />
           </div>
 
           <div className="login-orb login-orb-one" />
@@ -85,7 +85,7 @@ export default function LoginPage() {
               {mode === "login" ? "Entrar no Nexus" : "Criar acesso"}
             </h2>
             <p className="mt-3 text-sm leading-6 text-slateblue">
-              Autenticacao via Firebase com e-mail e senha. Cada conta recebe uma area isolada no Nexus.
+              Autenticacao via Firebase com e-mail e senha. DeepSeek organiza arquivos na ingestao e Groq acelera a busca e o chat.
             </p>
 
             {!isFirebaseConfigured && (

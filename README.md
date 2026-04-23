@@ -1,103 +1,109 @@
 # Nexus
 
-Nexus is a document-management and RAG system for PDF archives. It stores
-source documents in `/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS`, extracts Markdown with Docling,
-classifies metadata with Groq, indexes chunks in ChromaDB, keeps a persistent
-document manifest and chat memory, and exposes a Next.js dashboard protected by
-Firebase Authentication.
+Nexus is a private multi-user document archive with RAG chat. Each authenticated
+Firebase user gets a fully isolated workspace under
+`/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS/users/{uid}`.
+
+Provider split:
+
+- DeepSeek (`deepseek-chat`) organizes uploaded files by classifying metadata and
+  suggesting folder structure.
+- Groq (`openai/gpt-oss-20b`) powers chat answers and document lookup intent.
+- ChromaDB stores vectors per user collection.
 
 ## Project Layout
 
-- `backend/`: FastAPI API, PDF processing, Groq integration, embeddings and ChromaDB access.
-- `frontend/`: Next.js static export for Firebase Hosting.
-- `docker-compose.yml`: backend plus ChromaDB orchestration.
-- `cloudflared-config.yml.example`: Cloudflare Tunnel ingress example for `nexus-api.cursar.space`.
+- `backend/`: FastAPI API, Firebase token verification, file ingest, DeepSeek/Groq integration, embeddings and ChromaDB access.
+- `frontend/`: Next.js dashboard and Firebase Auth login.
+- `deploy/local/`: local service install scripts for this workstation.
 - `firebase.json`: Firebase Hosting config pointing to `frontend/out`.
+- `.agents/`: operational documentation for agents and maintainers.
 
-Runtime document storage:
+## Runtime Storage
+
+Create the base runtime path:
 
 ```bash
 mkdir -p "/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS"
 ```
 
-Nexus creates this runtime layout:
+Per user, Nexus creates:
 
-- `originals/{folder_path}/`: normalized PDF originals.
-- `markdown/{folder_path}/`: extracted Markdown files.
-- `manifest.jsonl`: append-only document memory with hashes, paths and metadata.
-- `memory/{session_id}.jsonl`: persistent chat memory per frontend session.
+- `users/{uid}/profile.json`
+- `users/{uid}/originals/{folder_path}/`
+- `users/{uid}/markdown/{folder_path}/`
+- `users/{uid}/manifest.jsonl`
+- `users/{uid}/memory/{session_id}.jsonl`
 
-`folder_path` is suggested by the AI as a relative path with up to four safe
-segments, such as `juridico/cliente-x/2026/contrato`. The backend sanitizes all
-segments, rejects traversal implicitly, and falls back to a deterministic
-`technology/project/year/classification` layout when the AI does not provide a
-useful path.
+Isolation rules:
+
+- documents do not mix between users
+- manifests do not mix between users
+- vectors use one Chroma collection per user
+- chat memory is stored per user and per session
 
 ## Backend
 
-Create the backend environment file:
+Create local backend env:
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-Set `GROQ_API_KEY` in `backend/.env`.
-
-Run with Docker:
+Set these keys:
 
 ```bash
-docker compose up --build
+DEEPSEEK_API_KEY=...
+GROQ_API_KEY=...
+FIREBASE_PROJECT_ID=nexus-98e32
 ```
 
-Backend endpoints:
+Recommended defaults already shipped:
 
-- `GET http://localhost:8000/health`
-- `POST http://localhost:8000/upload-document`
-- `GET http://localhost:8000/documents`
-- `GET http://localhost:8000/search-semantic?query=...`
-- `POST http://localhost:8000/chat`
-- `GET http://localhost:8000/memory/{session_id}`
-- `DELETE http://localhost:8000/memory/{session_id}`
+- `DEEPSEEK_MODEL=deepseek-chat`
+- `GROQ_MODEL=openai/gpt-oss-20b`
 
-Upload behavior:
-
-- Files are hashed with SHA-256 before indexing.
-- Duplicate PDFs return the existing manifest record instead of creating a second copy.
-- New PDFs are saved under classification/year folders using normalized names.
-- Markdown and ChromaDB metadata include the original filename, suggested name, folder path, year, title, project, tags, technologies and full paths.
-
-Chat behavior:
-
-- The frontend stores a `nexus_session_id` in `localStorage`.
-- `/chat` appends each turn to `/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS/memory/{session_id}.jsonl`.
-- Recent memory turns are injected into future prompts alongside retrieved document context.
-
-Local development without Docker requires ChromaDB to be available at the
-configured `CHROMA_HOST` and `CHROMA_PORT`:
+Local manual run:
 
 ```bash
 cd backend
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 127.0.0.1 --port 18000
 ```
+
+API endpoints:
+
+- `GET http://127.0.0.1:18000/health`
+- `POST http://127.0.0.1:18000/auth/sync`
+- `POST http://127.0.0.1:18000/upload-document`
+- `GET http://127.0.0.1:18000/documents`
+- `GET http://127.0.0.1:18000/search-semantic?query=...`
+- `POST http://127.0.0.1:18000/chat`
+- `GET http://127.0.0.1:18000/memory/{session_id}`
+- `DELETE http://127.0.0.1:18000/memory/{session_id}`
+
+Auth rules:
+
+- `health` is public
+- all other routes require `Authorization: Bearer <Firebase ID token>`
 
 ## Frontend
 
-Create the frontend environment file:
+Create local frontend env:
 
 ```bash
 cp frontend/.env.local.example frontend/.env.local
 ```
 
-Fill the Firebase public variables and set:
+Set:
 
 ```bash
-NEXT_PUBLIC_BACKEND_URL=https://nexus-api.cursar.space
+NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:18000
 ```
 
-Install and run:
+Run:
 
 ```bash
 cd frontend
@@ -111,53 +117,41 @@ Build static hosting output:
 npm run build
 ```
 
-Deploy to Firebase Hosting:
+## Firebase Hosting
+
+Deploy:
 
 ```bash
-npx firebase-tools deploy --only hosting --project nexus-98e32
+firebase deploy --only hosting --project nexus-98e32
 ```
 
-## Firebase Authentication
+Current hosting target:
 
-In the Firebase Console for project `nexus`:
+- `https://nexus-98e32.web.app`
 
-1. Open Authentication.
-2. Enable Google provider.
-3. Enable Email/Password provider.
-4. Add authorized domains for `nexus-98e32.web.app`, `nexus-98e32.firebaseapp.com`, and `nexus.cursar.space`.
-5. Copy the web app SDK config into `frontend/.env.local`.
+## Local Service Install
 
-## Cloudflare Tunnel
-
-`cloudflared` is expected to publish only the API host:
+For this workstation, use:
 
 ```bash
-cloudflared tunnel login
-cloudflared tunnel create nexus
-cloudflared tunnel route dns nexus nexus-api.cursar.space
-cloudflared tunnel --config cloudflared-config.yml run nexus
+deploy/local/install-local-services.sh
 ```
 
-To run as a service:
+It installs:
+
+- `nexus-chromadb.service`
+- `nexus-backend.service`
+- optional `nexus-cloudflared.service`
+
+Active service env file:
+
+- `~/.config/nexus/backend.env`
+
+## Validation
 
 ```bash
-sudo cloudflared service install
-sudo systemctl enable --now cloudflared
+python3 -m py_compile backend/main.py
+cd frontend && npm run build
+curl http://127.0.0.1:18000/health
+curl -H "Authorization: Bearer invalid-token" http://127.0.0.1:18000/documents
 ```
-
-Configure `nexus.cursar.space` as a custom domain in Firebase Hosting. Do not
-proxy Firebase Hosting through the API tunnel unless you intentionally want a
-different hosting topology.
-
-## Validation Checklist
-
-```bash
-python3 -m compileall backend
-cd frontend && npm install && npm run build
-docker compose up --build
-curl http://localhost:8000/health
-```
-
-Known environment note: this workstation currently has Python, Node, npm and
-cloudflared installed, but Docker and Firebase CLI may need installation or use
-through `npx firebase-tools`.

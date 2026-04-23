@@ -20,6 +20,7 @@ type BusyState = "upload" | "search" | "chat" | null;
 const quickPrompts = [
   "Resuma os principais pontos dos documentos recentes",
   "Quais documentos falam sobre tecnologia?",
+  "Encontre o arquivo PDF de contrato mais relevante",
   "Liste riscos, prazos ou obrigacoes encontrados",
   "Compare os documentos mais relevantes"
 ];
@@ -310,7 +311,7 @@ export default function DashboardPage() {
                 Transforme PDFs em memoria pesquisavel.
               </h1>
               <p className="mt-5 max-w-2xl text-base text-slateblue md:text-lg">
-                Envie documentos, extraia metadados com Groq, indexe conteudo no ChromaDB e consulte tudo por linguagem natural.
+                DeepSeek organiza os arquivos na ingestao. Groq acelera a localizacao de documentos e a resposta no chat com contexto do seu acervo privado.
               </p>
             </div>
             <div className="relative z-10 mt-8 grid gap-3 md:grid-cols-3">
@@ -353,7 +354,7 @@ export default function DashboardPage() {
                     {selectedFile ? selectedFile.name : "Solte ou selecione um PDF"}
                   </span>
                   <span className="mt-2 text-sm text-slateblue">
-                    Docling extrai o conteudo e o Nexus prepara a indexacao semantica.
+                    Docling extrai o conteudo, DeepSeek classifica e o Nexus prepara a indexacao semantica.
                   </span>
                 </label>
 
@@ -380,7 +381,7 @@ export default function DashboardPage() {
                 <p className="eyebrow">02 / Recuperacao</p>
                 <h2 className="mt-3 font-display text-3xl font-bold">Busca semantica</h2>
                 <p className="mt-3 text-sm text-slateblue">
-                  Pesquise pelo sentido da pergunta, nao apenas por palavra exata.
+                  Mistura busca por metadados e semantica para localizar arquivos e trechos com mais precisao.
                 </p>
                 <div className="mt-5 flex flex-col gap-3 sm:flex-row">
                   <input
@@ -493,6 +494,9 @@ export default function DashboardPage() {
                     <h2 className="mt-3 font-display text-3xl font-bold">Chat RAG</h2>
                     <p className="mt-2 break-all text-xs text-slateblue">
                       Sessao de memoria: {sessionId}
+                    </p>
+                    <p className="mt-2 text-sm text-slateblue">
+                      Quando voce pedir um arquivo especifico, o Groq prioriza lookup no manifesto antes de responder.
                     </p>
                   </div>
                   <span className="status-chip">{busy === "chat" ? "pensando" : "online"}</span>
