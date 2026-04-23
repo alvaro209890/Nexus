@@ -7,6 +7,8 @@ import {
 } from "firebase/auth";
 import { firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
 import { syncAuthenticatedUser } from "../lib/api";
+import { Button } from "../components/ui/Button";
+import { Input } from "../components/ui/Input";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -39,104 +41,104 @@ export default function LoginPage() {
 
       await router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha na autenticacao.");
+      setError(err instanceof Error ? err.message : "Falha na autenticação.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden px-5 py-8">
-      <div className="login-grid mx-auto grid min-h-[calc(100vh-4rem)] max-w-7xl overflow-hidden rounded-[2.5rem]">
-        <section className="relative flex flex-col justify-between bg-ink p-8 text-white md:p-12">
-          <div>
+    <main className="relative min-h-screen overflow-hidden px-5 py-8 bg-porcelain">
+      <div className="login-grid mx-auto grid min-h-[calc(100vh-4rem)] max-w-7xl overflow-hidden rounded-[2.5rem] shadow-2xl">
+        <section className="relative flex flex-col justify-between bg-ink p-8 text-white md:p-12 overflow-hidden">
+          <div className="relative z-10">
             <div className="flex items-center gap-3">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-amberline font-display text-xl font-bold text-ink">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-amberline font-display text-xl font-bold text-ink shadow-lg">
                 N
               </div>
               <div>
                 <p className="font-display text-2xl font-bold">Nexus</p>
-                <p className="text-xs uppercase tracking-[0.26em] text-white/50">Archive OS</p>
+                <p className="text-xs uppercase tracking-[0.26em] text-white/50">Archive OS v1.0</p>
               </div>
             </div>
 
-            <h1 className="mt-16 max-w-2xl font-display text-5xl font-bold leading-[0.95] md:text-7xl">
-              Uma memoria operacional para seus documentos.
+            <h1 className="mt-16 max-w-2xl font-display text-5xl font-bold leading-[0.95] md:text-7xl tracking-tighter">
+              Uma memória operacional para seus documentos.
             </h1>
-            <p className="mt-6 max-w-xl text-lg leading-8 text-white/70">
-              Organize PDFs, extraia conhecimento, converse com sua base e encontre evidencias em segundos.
+            <p className="mt-8 max-w-xl text-lg leading-relaxed text-white/70">
+              Organize PDFs, extraia conhecimento, converse com sua base e encontre evidências em segundos com IA avançada.
             </p>
           </div>
 
-          <div className="mt-12 grid gap-3 sm:grid-cols-3">
+          <div className="relative z-10 mt-12 grid gap-3 sm:grid-cols-3">
             <LoginFeature value="PDF" label="Docling" />
             <LoginFeature value="AI" label="DeepSeek" />
             <LoginFeature value="RAG" label="Groq" />
           </div>
 
-          <div className="login-orb login-orb-one" />
-          <div className="login-orb login-orb-two" />
+          {/* Decorative Orbs inside the dark section */}
+          <div className="absolute right-[-10%] top-[20%] w-64 h-64 bg-amberline/20 rounded-full blur-[100px]" />
+          <div className="absolute left-[10%] bottom-[-5%] w-80 h-80 bg-slateblue/20 rounded-full blur-[100px]" />
         </section>
 
-        <section className="glass-panel flex items-center justify-center rounded-none p-6 md:p-12">
-          <div className="w-full max-w-md">
-            <p className="eyebrow">Acesso seguro</p>
-            <h2 className="mt-3 font-display text-4xl font-bold">
-              {mode === "login" ? "Entrar no Nexus" : "Criar acesso"}
+        <section className="glass-panel flex items-center justify-center rounded-none p-6 md:p-12 relative">
+          <div className="w-full max-w-md relative z-10">
+            <p className="eyebrow">Acesso Restrito</p>
+            <h2 className="mt-3 font-display text-4xl font-bold tracking-tight">
+              {mode === "login" ? "Entrar no Nexus" : "Criar Nova Conta"}
             </h2>
-            <p className="mt-3 text-sm leading-6 text-slateblue">
-              Autenticacao via Firebase com e-mail e senha. DeepSeek organiza arquivos na ingestao e Groq acelera a busca e o chat.
+            <p className="mt-3 text-sm leading-relaxed text-slateblue font-medium">
+              Utilize suas credenciais para acessar o ambiente de análise vetorial.
             </p>
 
             {!isFirebaseConfigured && (
-              <div className="mt-6 rounded-2xl border border-amberline/40 bg-amberline/10 p-4 text-sm text-ink">
-                Configure as variaveis `NEXT_PUBLIC_FIREBASE_*` em `frontend/.env.local`.
+              <div className="mt-6 rounded-2xl border border-amberline/40 bg-amberline/10 p-4 text-sm text-ink font-bold">
+                Atenção: Firebase não configurado no ambiente.
               </div>
             )}
 
-            <form className="mt-8 space-y-4" onSubmit={handleEmailAuth}>
-              <label className="block">
-                <span className="mb-2 block text-sm font-bold text-slateblue">E-mail</span>
-                <input
-                  className="field"
-                  type="email"
-                  placeholder="email@dominio.com"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                />
-              </label>
-              <label className="block">
-                <span className="mb-2 block text-sm font-bold text-slateblue">Senha</span>
-                <input
-                  className="field"
-                  type="password"
-                  placeholder="Minimo 6 caracteres"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  minLength={6}
-                  required
-                />
-              </label>
+            <form className="mt-10 space-y-5" onSubmit={handleEmailAuth}>
+              <Input 
+                label="E-mail Corporativo"
+                type="email"
+                placeholder="nome@empresa.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <Input 
+                label="Senha de Acesso"
+                type="password"
+                placeholder="Mínimo 6 caracteres"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={6}
+                required
+              />
+              
               {error && (
-                <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700">{error}</p>
+                <p className="rounded-2xl bg-red-50 p-4 text-xs font-bold text-red-700 border border-red-100">{error}</p>
               )}
-              <button
-                className="primary-button w-full disabled:cursor-not-allowed disabled:opacity-50"
+              
+              <Button
                 type="submit"
-                disabled={loading || !isFirebaseConfigured}
+                className="w-full !py-4"
+                isLoading={loading}
+                disabled={!isFirebaseConfigured}
               >
-                {loading ? "Processando..." : mode === "login" ? "Entrar" : "Registrar"}
-              </button>
+                {mode === "login" ? "Autenticar Sistema" : "Registrar Operador"}
+              </Button>
             </form>
 
-            <button
-              className="mt-6 text-sm font-bold text-slateblue"
-              type="button"
-              onClick={() => setMode(mode === "login" ? "register" : "login")}
-            >
-              {mode === "login" ? "Criar uma nova conta" : "Ja tenho conta"}
-            </button>
+            <div className="mt-8 pt-6 border-t border-white/40 flex justify-between items-center">
+              <button
+                className="text-xs font-bold text-slateblue hover:text-ink transition-colors uppercase tracking-widest"
+                type="button"
+                onClick={() => setMode(mode === "login" ? "register" : "login")}
+              >
+                {mode === "login" ? "Solicitar Novo Acesso" : "Voltar para Login"}
+              </button>
+            </div>
           </div>
         </section>
       </div>
@@ -146,9 +148,9 @@ export default function LoginPage() {
 
 function LoginFeature({ value, label }: { value: string; label: string }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm group hover:bg-white/10 transition-colors">
       <p className="font-display text-3xl font-bold text-amberline">{value}</p>
-      <p className="mt-1 text-xs uppercase tracking-[0.24em] text-white/50">{label}</p>
+      <p className="mt-1 text-[0.6rem] uppercase tracking-[0.24em] text-white/50 font-bold">{label}</p>
     </div>
   );
 }

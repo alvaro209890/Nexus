@@ -18,6 +18,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -139,6 +140,7 @@ class DocumentRecord(BaseModel):
     markdown_path: str
     chunks_indexed: int
     uploaded_at: str
+    size_bytes: int | None = None
 
 
 class AuthenticatedUserProfile(BaseModel):
@@ -355,7 +357,29 @@ async def list_documents(
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> list[DocumentRecord]:
     records = read_manifest_records(current_user)
-    return [DocumentRecord(**record) for record in records[-limit:]][::-1]
+    visible_records = [hydrate_document_record(record) for record in records[-limit:]][::-1]
+    return [DocumentRecord(**record) for record in visible_records]
+
+
+@app.get("/documents/{document_id}/download")
+async def download_document(
+    document_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> FileResponse:
+    record = find_document_by_id(current_user, document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
+    if not pdf_path.exists() or not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored PDF is missing.")
+    try:
+        pdf_path.relative_to(current_user.originals_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Document path is outside the user's storage.") from exc
+
+    download_name = safe_filename(str(record.get("original_name") or pdf_path.name))
+    return FileResponse(path=pdf_path, filename=download_name, media_type="application/pdf")
 
 
 @app.get("/search-semantic", response_model=list[SearchResult])
@@ -1038,6 +1062,7 @@ def build_document_record(
         "markdown_path": str(markdown_path),
         "chunks_indexed": chunks_indexed,
         "uploaded_at": datetime.now(UTC).isoformat(),
+        "size_bytes": pdf_path.stat().st_size if pdf_path.exists() else None,
     }
 
 
@@ -1063,9 +1088,30 @@ def read_manifest_records(current_user: AuthenticatedUserContext) -> list[dict[s
     return records
 
 
+def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
+    hydrated = dict(record)
+    if hydrated.get("size_bytes") is None:
+        pdf_path_value = str(hydrated.get("pdf_path") or "").strip()
+        if pdf_path_value:
+            pdf_path = Path(pdf_path_value)
+            if pdf_path.exists() and pdf_path.is_file():
+                hydrated["size_bytes"] = pdf_path.stat().st_size
+    return hydrated
+
+
 def find_document_by_hash(current_user: AuthenticatedUserContext, file_hash: str) -> dict[str, Any] | None:
     for record in reversed(read_manifest_records(current_user)):
         if record.get("sha256") == file_hash:
+            return record
+    return None
+
+
+def find_document_by_id(current_user: AuthenticatedUserContext, document_id: str) -> dict[str, Any] | None:
+    clean_id = document_id.strip()
+    if not clean_id:
+        return None
+    for record in reversed(read_manifest_records(current_user)):
+        if str(record.get("document_id") or "").strip() == clean_id:
             return record
     return None
 

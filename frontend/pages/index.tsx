@@ -1,571 +1,151 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/router";
-import { onIdTokenChanged, signOut, type User } from "firebase/auth";
-import { firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
-import {
-  AuthenticatedUserProfile,
-  ChatTurn,
-  DocumentRecord,
-  SearchResult,
-  UploadResponse,
-  listDocuments,
-  searchSemantic,
-  sendChatMessage,
-  syncAuthenticatedUser,
-  uploadDocument
-} from "../lib/api";
-
-type BusyState = "upload" | "search" | "chat" | null;
-
-const quickPrompts = [
-  "Resuma os principais pontos dos documentos recentes",
-  "Quais documentos falam sobre tecnologia?",
-  "Encontre o arquivo PDF de contrato mais relevante",
-  "Liste riscos, prazos ou obrigacoes encontrados",
-  "Compare os documentos mais relevantes"
-];
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { useAuth } from "../contexts/AuthContext";
+import { DocumentRecord, listDocuments } from "../lib/api";
+import { GlassCard } from "../components/ui/GlassCard";
+import { StatusChip } from "../components/ui/StatusChip";
 
 export default function DashboardPage() {
-  const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [authProfile, setAuthProfile] = useState<AuthenticatedUserProfile | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [authSyncing, setAuthSyncing] = useState(true);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
-  const [uploadStatus, setUploadStatus] = useState("");
-  const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
-  const [chatReferences, setChatReferences] = useState<SearchResult[]>([]);
+  const { user, authProfile, getCurrentToken } = useAuth();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [sessionId, setSessionId] = useState("default");
-  const [busy, setBusy] = useState<BusyState>(null);
-  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!firebaseAuth) {
-      setAuthChecked(true);
-      setAuthSyncing(false);
-      return;
+    if (user && authProfile) {
+      void (async () => {
+        try {
+          const token = await getCurrentToken();
+          const docs = await listDocuments(token, 50);
+          setDocuments(docs);
+        } catch (err) {
+          console.error("Failed to load dashboard metrics", err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
+  }, [user, authProfile, getCurrentToken]);
 
-    return onIdTokenChanged(firebaseAuth, (currentUser) => {
-      setAuthChecked(true);
-
-      if (!currentUser) {
-        setUser(null);
-        setAuthProfile(null);
-        setAuthSyncing(false);
-        setDocuments([]);
-        setChatHistory([]);
-        setChatReferences([]);
-        void router.replace("/login");
-        return;
-      }
-
-      setUser(currentUser);
-      setAuthSyncing(true);
-      void syncUserContext(currentUser);
-    });
-  }, [router]);
-
-  useEffect(() => {
-    if (!user) return;
-
-    const storageKey = `nexus_session_id:${user.uid}`;
-    const savedSession = window.localStorage.getItem(storageKey);
-    if (savedSession) {
-      setSessionId(savedSession);
-      return;
-    }
-
-    const nextSession = `nexus-${user.uid}-${crypto.randomUUID()}`;
-    window.localStorage.setItem(storageKey, nextSession);
-    setSessionId(nextSession);
-    setChatHistory([]);
-    setChatReferences([]);
-  }, [user]);
-
-  useEffect(() => {
-    if (!user || !authProfile) return;
-    void refreshDocuments(user);
-  }, [authProfile, user]);
-
-  const displayName = useMemo(() => {
-    return user?.displayName || user?.email || "Operador Nexus";
-  }, [user]);
-
-  const indexedChunks = documents.reduce((total, document) => total + document.chunks_indexed, 0);
-  const lastClassification = uploadResult?.classification || documents[0]?.classification || "aguardando";
-
-  async function syncUserContext(currentUser: User) {
-    try {
-      const token = await currentUser.getIdToken();
-      const profile = await syncAuthenticatedUser(token);
-      setAuthProfile(profile);
-      setError("");
-    } catch (err) {
-      setAuthProfile(null);
-      setError(err instanceof Error ? err.message : "Falha ao sincronizar o usuario.");
-    } finally {
-      setAuthSyncing(false);
-    }
-  }
-
-  async function getCurrentToken(): Promise<string> {
-    const currentUser = firebaseAuth?.currentUser;
-    if (!currentUser) {
-      throw new Error("Sessao expirada. Entre novamente.");
-    }
-    return currentUser.getIdToken();
-  }
-
-  async function handleUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedFile) return;
-
-    setBusy("upload");
-    setError("");
-    setUploadStatus("Extraindo texto, classificando e indexando o PDF...");
-    try {
-      const result = await uploadDocument(selectedFile, await getCurrentToken());
-      setUploadResult(result);
-      setUploadStatus(
-        result.duplicate
-          ? "Documento ja existia na memoria. Registro recuperado."
-          : `Documento indexado com ${result.chunks_indexed} chunk(s).`
-      );
-      await refreshDocuments();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha no upload.");
-      setUploadStatus("");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!query.trim()) return;
-
-    setBusy("search");
-    setError("");
-    try {
-      setSearchResults(await searchSemantic(query.trim(), await getCurrentToken()));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha na busca.");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function submitChatMessage(message: string) {
-    const cleanMessage = message.trim();
-    if (!cleanMessage) return;
-
-    const nextHistory: ChatTurn[] = [
-      ...chatHistory,
-      { role: "user", content: cleanMessage }
-    ];
-    setChatHistory(nextHistory);
-    setChatInput("");
-    setBusy("chat");
-    setError("");
-    try {
-      const result = await sendChatMessage(
-        cleanMessage,
-        chatHistory,
-        sessionId,
-        await getCurrentToken()
-      );
-      setChatHistory([
-        ...nextHistory,
-        { role: "assistant", content: result.answer }
-      ]);
-      setChatReferences(result.references);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha no chat.");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleChat(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await submitChatMessage(chatInput);
-  }
-
-  async function handleLogout() {
-    if (firebaseAuth) await signOut(firebaseAuth);
-    await router.replace("/login");
-  }
-
-  async function refreshDocuments(currentUser?: User | null) {
-    if (!currentUser) return;
-    try {
-      const token = await currentUser.getIdToken();
-      setDocuments(await listDocuments(token));
-    } catch (err) {
-      console.warn("Could not load documents", err);
-    }
-  }
-
-  if (!authChecked || authSyncing) {
-    return (
-      <main className="grid min-h-screen place-items-center px-6">
-        <div className="glass-panel rounded-[2rem] p-8 text-center">
-          <div className="mx-auto mb-5 h-12 w-12 animate-pulse rounded-2xl bg-amberline" />
-          <p className="font-display text-2xl font-bold">Carregando Nexus</p>
-          <p className="mt-2 text-sm text-slateblue">Sincronizando sua area privada.</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!isFirebaseConfigured) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="glass-panel mx-auto max-w-2xl rounded-[2rem] p-8">
-          <p className="eyebrow">Configuracao</p>
-          <h1 className="mt-3 font-display text-4xl font-bold">Firebase nao configurado</h1>
-          <p className="mt-4 text-slateblue">
-            Crie `frontend/.env.local` com as variaveis Firebase antes de usar o dashboard.
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!user) return null;
-
-  if (!authProfile) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="glass-panel mx-auto max-w-2xl rounded-[2rem] p-8">
-          <p className="eyebrow">Acesso</p>
-          <h1 className="mt-3 font-display text-4xl font-bold">Nao foi possivel sincronizar seu usuario</h1>
-          <p className="mt-4 text-slateblue">
-            O Nexus exige sincronizacao do usuario autenticado antes de liberar documentos,
-            memoria e busca vetorial.
-          </p>
-          {error && (
-            <p className="mt-4 rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">
-              {error}
-            </p>
-          )}
-          <button
-            className="primary-button mt-6"
-            type="button"
-            onClick={() => {
-              setAuthSyncing(true);
-              void syncUserContext(user);
-            }}
-          >
-            Tentar novamente
-          </button>
-        </div>
-      </main>
-    );
-  }
+  const totalChunks = documents.reduce((acc, doc) => acc + (doc.chunks_indexed || 0), 0);
+  const recentDocs = documents.slice(0, 5);
 
   return (
-    <main className="min-h-screen px-4 py-5 md:px-7">
-      <div className="mx-auto grid max-w-[1500px] gap-5 xl:grid-cols-[18rem_1fr]">
-        <aside className="glass-panel sticky top-5 hidden h-[calc(100vh-2.5rem)] rounded-[2rem] p-5 xl:flex xl:flex-col">
-          <div className="flex items-center gap-3">
-            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-ink font-display text-xl font-bold text-white">
-              N
-            </div>
-            <div>
-              <p className="font-display text-xl font-bold">Nexus</p>
-              <p className="text-xs uppercase tracking-[0.22em] text-slateblue">Archive OS</p>
-            </div>
+    <div className="space-y-10">
+      <header className="flex justify-between items-end">
+        <div>
+          <p className="eyebrow mb-1">Visão Geral do Sistema</p>
+          <h1 className="text-4xl font-bold tracking-tight">
+            Bem-vindo, <span className="text-slateblue">{user?.displayName || user?.email?.split("@")[0] || "Operador"}</span>
+          </h1>
+        </div>
+        <div className="text-right">
+          <p className="text-xs font-bold uppercase tracking-widest text-slateblue/60">Status do Nexus</p>
+          <div className="flex items-center gap-2 mt-1">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+            <span className="text-sm font-bold">Ambiente Sincronizado</span>
           </div>
+        </div>
+      </header>
 
-          <nav className="mt-10 space-y-2 text-sm font-bold">
-            <a className="nav-pill nav-pill-active" href="#upload">Upload</a>
-            <a className="nav-pill" href="#search">Busca semantica</a>
-            <a className="nav-pill" href="#chat">Chat RAG</a>
-          </nav>
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <GlassCard className="!bg-ink text-white">
+          <p className="eyebrow !text-white/40 mb-2">Total de Documentos</p>
+          <p className="text-5xl font-bold font-mono">{loading ? "..." : documents.length}</p>
+          <p className="text-xs mt-4 text-white/50 font-medium">Arquivos PDF processados na nuvem</p>
+        </GlassCard>
+        
+        <GlassCard>
+          <p className="eyebrow mb-2">Conhecimento Indexado</p>
+          <p className="text-5xl font-bold font-mono text-slateblue">{loading ? "..." : totalChunks}</p>
+          <p className="text-xs mt-4 text-slateblue/60 font-medium">Vetores (chunks) prontos para RAG</p>
+        </GlassCard>
 
-          <div className="mt-auto rounded-[1.5rem] bg-ink p-5 text-white">
-            <p className="text-xs uppercase tracking-[0.24em] text-white/50">Sessao</p>
-            <p className="mt-3 break-words font-semibold">{displayName}</p>
-            <button
-              className="mt-5 w-full rounded-full bg-white px-4 py-2 text-sm font-bold text-ink"
-              type="button"
-              onClick={handleLogout}
-            >
-              Sair
-            </button>
+        <GlassCard>
+          <p className="eyebrow mb-2">Sessão Ativa</p>
+          <p className="text-xl font-bold mt-2 truncate">{authProfile?.display_name || authProfile?.email || "Sessão privada"}</p>
+          <div className="mt-6">
+             <StatusChip label="Privado" variant="success" />
           </div>
-        </aside>
-
-        <section className="space-y-5">
-          <header className="hero-panel relative overflow-hidden rounded-[2.2rem] p-6 md:p-8">
-            <div className="relative z-10 max-w-4xl">
-              <p className="eyebrow">Central Nexus</p>
-              <h1 className="mt-4 font-display text-4xl font-bold leading-[0.98] md:text-7xl">
-                Transforme PDFs em memoria pesquisavel.
-              </h1>
-              <p className="mt-5 max-w-2xl text-base text-slateblue md:text-lg">
-                DeepSeek organiza os arquivos na ingestao. Groq acelera a localizacao de documentos e a resposta no chat com contexto do seu acervo privado.
-              </p>
-            </div>
-            <div className="relative z-10 mt-8 grid gap-3 md:grid-cols-3">
-              <MetricCard label="Ultima classe" value={lastClassification} />
-              <MetricCard label="Chunks indexados" value={String(indexedChunks)} />
-              <MetricCard label="Memoria documental" value={String(documents.length)} />
-            </div>
-            <div className="orb orb-one" />
-            <div className="orb orb-two" />
-          </header>
-
-          {error && (
-            <div className="rounded-[1.25rem] border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
-              {error}
-            </div>
-          )}
-
-          <div className="grid gap-5 lg:grid-cols-[0.92fr_1.08fr]">
-            <div className="space-y-5">
-              <form id="upload" className="panel-card" onSubmit={handleUpload}>
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="eyebrow">01 / Ingestao</p>
-                    <h2 className="mt-3 font-display text-3xl font-bold">Upload inteligente</h2>
-                  </div>
-                  <span className="status-chip">PDF</span>
-                </div>
-                <p className="mt-3 text-sm text-slateblue">
-                  {`Cada upload entra apenas na sua area privada em ${authProfile.user_root}. Markdown, manifesto, memoria e vetores ficam isolados dos demais usuarios.`}
-                </p>
-
-                <label className="drop-zone mt-6">
-                  <input
-                    className="sr-only"
-                    type="file"
-                    accept="application/pdf"
-                    onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
-                  />
-                  <span className="font-display text-xl font-bold">
-                    {selectedFile ? selectedFile.name : "Solte ou selecione um PDF"}
-                  </span>
-                  <span className="mt-2 text-sm text-slateblue">
-                    Docling extrai o conteudo, DeepSeek classifica e o Nexus prepara a indexacao semantica.
-                  </span>
-                </label>
-
-                <button
-                  className="primary-button mt-5 w-full disabled:cursor-not-allowed disabled:opacity-50"
-                  type="submit"
-                  disabled={!selectedFile || busy === "upload"}
-                >
-                  {busy === "upload" ? "Processando documento..." : "Enviar e indexar"}
-                </button>
-
-                {uploadStatus && <p className="mt-4 text-sm font-semibold text-moss">{uploadStatus}</p>}
-                {uploadResult && (
-                  <div className="mt-5 rounded-[1.25rem] border border-ink/10 bg-white/70 p-4 text-sm">
-                    {uploadResult.duplicate && <p><strong>Status:</strong> documento duplicado</p>}
-                    <p><strong>Classificacao:</strong> {uploadResult.classification}</p>
-                    <p><strong>Nome sugerido:</strong> {uploadResult.suggested_name}</p>
-                    <p className="break-all"><strong>Markdown:</strong> {uploadResult.markdown_path}</p>
-                  </div>
-                )}
-              </form>
-
-              <form id="search" className="panel-card" onSubmit={handleSearch}>
-                <p className="eyebrow">02 / Recuperacao</p>
-                <h2 className="mt-3 font-display text-3xl font-bold">Busca semantica</h2>
-                <p className="mt-3 text-sm text-slateblue">
-                  Mistura busca por metadados e semantica para localizar arquivos e trechos com mais precisao.
-                </p>
-                <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-                  <input
-                    className="field"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Ex: documentos sobre contrato e prazo"
-                  />
-                  <button className="primary-button sm:w-36" type="submit" disabled={busy === "search"}>
-                    {busy === "search" ? "Buscando" : "Buscar"}
-                  </button>
-                </div>
-              </form>
-
-              <section className="panel-card">
-                <p className="eyebrow">Memoria</p>
-                <h2 className="mt-3 font-display text-3xl font-bold">Documentos recentes</h2>
-                <div className="mt-4 space-y-3">
-                  {documents.length === 0 && (
-                    <EmptyState
-                      title="Memoria vazia"
-                      message="Envie um PDF para criar o primeiro registro persistente."
-                    />
-                  )}
-                  {documents.slice(0, 4).map((document) => (
-                    <article key={document.document_id} className="result-card">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="status-chip">{document.classification}</span>
-                        <span className="text-xs font-bold text-slateblue">{document.year}</span>
-                      </div>
-                      <h3 className="mt-2 font-display text-lg font-bold">{document.title}</h3>
-                      <p className="mt-1 line-clamp-2 text-sm text-slateblue">
-                        {document.summary || document.suggested_name}
-                      </p>
-                      <p className="mt-2 break-all text-xs font-semibold text-slateblue">
-                        Pasta: {document.folder_path || "sem pasta"}
-                      </p>
-                      <p className="mt-2 text-xs text-slateblue/80">
-                        {document.chunks_indexed} chunk(s) na memoria
-                      </p>
-                    </article>
-                  ))}
-                </div>
-              </section>
-
-              <section className="panel-card">
-                <p className="eyebrow">Atalhos de raciocinio</p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  {quickPrompts.map((prompt) => (
-                    <button
-                      key={prompt}
-                      className="quick-card"
-                      type="button"
-                      onClick={() => setChatInput(prompt)}
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            </div>
-
-            <div className="space-y-5">
-              <section className="panel-card min-h-[23rem]">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <p className="eyebrow">Resultados</p>
-                    <h2 className="mt-3 font-display text-3xl font-bold">Documentos encontrados</h2>
-                  </div>
-                  <span className="status-chip">{searchResults.length} item(ns)</span>
-                </div>
-
-                <div className="mt-5 space-y-3">
-                  {searchResults.length === 0 && (
-                    <EmptyState
-                      title="Nenhum resultado carregado"
-                      message="Faca uma busca semantica ou envie um PDF para popular a base."
-                    />
-                  )}
-                  {searchResults.map((result) => (
-                    <article key={result.chunk_id} className="result-card">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="status-chip">{result.classification || "documento"}</span>
-                        {result.score !== null && (
-                          <span className="text-xs font-bold text-slateblue">
-                            score {(result.score * 100).toFixed(1)}%
-                          </span>
-                        )}
-                      </div>
-                      <h3 className="mt-3 font-display text-xl font-bold">
-                        {result.metadata.title || result.suggested_name || "Documento sem titulo"}
-                      </h3>
-                      <p className="mt-2 line-clamp-4 text-sm leading-6 text-slateblue">
-                        {result.snippet}
-                      </p>
-                      {result.markdown_path && (
-                        <p className="mt-3 break-all text-xs text-slateblue/80">
-                          {result.markdown_path}
-                        </p>
-                      )}
-                    </article>
-                  ))}
-                </div>
-              </section>
-
-              <section id="chat" className="panel-card">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <p className="eyebrow">03 / Sintese</p>
-                    <h2 className="mt-3 font-display text-3xl font-bold">Chat RAG</h2>
-                    <p className="mt-2 break-all text-xs text-slateblue">
-                      Sessao de memoria: {sessionId}
-                    </p>
-                    <p className="mt-2 text-sm text-slateblue">
-                      Quando voce pedir um arquivo especifico, o Groq prioriza lookup no manifesto antes de responder.
-                    </p>
-                  </div>
-                  <span className="status-chip">{busy === "chat" ? "pensando" : "online"}</span>
-                </div>
-
-                <div className="mt-5 max-h-[30rem] space-y-3 overflow-y-auto rounded-[1.5rem] bg-ink/5 p-3">
-                  {chatHistory.length === 0 && (
-                    <EmptyState
-                      title="Converse com a base"
-                      message="O Nexus usa os documentos mais relevantes como contexto antes de responder."
-                    />
-                  )}
-                  {chatHistory.map((turn, index) => (
-                    <div
-                      key={`${turn.role}-${index}`}
-                      className={`chat-bubble ${turn.role === "user" ? "chat-user" : "chat-assistant"}`}
-                    >
-                      {turn.content}
-                    </div>
-                  ))}
-                </div>
-
-                <form className="mt-4 flex flex-col gap-3 sm:flex-row" onSubmit={handleChat}>
-                  <input
-                    className="field"
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    placeholder="Pergunte ao Nexus..."
-                  />
-                  <button className="primary-button sm:w-36" type="submit" disabled={busy === "chat"}>
-                    Enviar
-                  </button>
-                </form>
-
-                {chatReferences.length > 0 && (
-                  <div className="mt-5 rounded-[1.25rem] border border-ink/10 bg-white/70 p-4">
-                    <p className="eyebrow">Referencias usadas</p>
-                    <div className="mt-3 space-y-2">
-                      {chatReferences.map((reference) => (
-                        <p key={reference.chunk_id} className="text-sm font-semibold">
-                          {reference.metadata.title || reference.suggested_name || reference.document_id}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </section>
-            </div>
-          </div>
-        </section>
+        </GlassCard>
       </div>
-    </main>
-  );
-}
 
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric-card">
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-slateblue">{label}</p>
-      <p className="mt-2 truncate font-display text-2xl font-bold">{value}</p>
-    </div>
-  );
-}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Quick Actions */}
+        <div className="space-y-4">
+          <p className="eyebrow">Ações Rápidas</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Link href="/documents" className="quick-card group">
+              <div className="flex flex-col h-full justify-between">
+                <svg className="w-6 h-6 text-slateblue group-hover:text-amberline transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <span>Upload de Documentos</span>
+              </div>
+            </Link>
+            <Link href="/files" className="quick-card group">
+              <div className="flex flex-col h-full justify-between">
+                <svg className="w-6 h-6 text-slateblue group-hover:text-amberline transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                </svg>
+                <span>Explorar Arquivos</span>
+              </div>
+            </Link>
+            <Link href="/chat" className="quick-card group sm:col-span-2">
+              <div className="flex flex-col h-full justify-between">
+                <svg className="w-6 h-6 text-slateblue group-hover:text-amberline transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                </svg>
+                <span>Consultar Assistente IA</span>
+              </div>
+            </Link>
+          </div>
 
-function EmptyState({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="rounded-[1.5rem] border border-dashed border-ink/15 bg-white/50 p-6 text-center">
-      <p className="font-display text-xl font-bold">{title}</p>
-      <p className="mt-2 text-sm text-slateblue">{message}</p>
+          <GlassCard className="mt-6 !p-6 bg-amberline/5 border-amberline/20">
+            <h3 className="font-bold text-amber-900 mb-2">Como utilizar o Nexus?</h3>
+            <p className="text-sm text-amber-900/70 leading-relaxed">
+              1. Comece enviando seus arquivos PDF na aba <b>Documentos</b>.<br/>
+              2. Aguarde a indexação (processamento vetorial).<br/>
+              3. Use o <b>Chat IA</b> para fazer perguntas complexas baseadas nos seus dados ou a <b>Busca Semântica</b> para encontrar trechos específicos.
+            </p>
+          </GlassCard>
+        </div>
+
+        {/* Recent Activity */}
+        <GlassCard className="overflow-hidden">
+          <div className="flex justify-between items-center mb-6">
+             <p className="eyebrow">Atividade Recente</p>
+             <Link href="/documents" className="text-[0.6rem] font-bold text-slateblue hover:text-ink transition-colors uppercase tracking-widest">Ver Todos</Link>
+          </div>
+          
+          <div className="space-y-3">
+            {loading ? (
+              <div className="space-y-2">
+                {[1,2,3].map(i => <div key={i} className="h-12 bg-slateblue/5 animate-pulse rounded-xl" />)}
+              </div>
+            ) : recentDocs.length === 0 ? (
+              <p className="text-center py-10 text-slateblue/50 italic text-sm">Nenhuma atividade registrada.</p>
+            ) : (
+              recentDocs.map(doc => (
+                <div key={doc.document_id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/50 transition-colors border border-transparent hover:border-white/60">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-slateblue/10 rounded-lg flex items-center justify-center">
+                       <svg className="w-4 h-4 text-slateblue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                       </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold truncate max-w-[180px]">{doc.suggested_name || doc.original_name}</p>
+                      <p className="text-[0.6rem] text-slateblue/60 uppercase font-bold">{new Date(doc.uploaded_at).toLocaleDateString()}</p>
+                    </div>
+                  </div>
+                  <StatusChip label={doc.classification || "PDF"} variant="info" />
+                </div>
+              ))
+            )}
+          </div>
+        </GlassCard>
+      </div>
     </div>
   );
 }

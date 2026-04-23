@@ -69,6 +69,7 @@ export type DocumentRecord = {
   markdown_path: string;
   chunks_indexed: number;
   uploaded_at: string;
+  size_bytes?: number | null;
 };
 
 const LOCAL_API_BASE = "http://127.0.0.1:18000";
@@ -166,9 +167,48 @@ export async function sendChatMessage(
   return parseJsonResponse<ChatResponse>(response);
 }
 
-export async function listDocuments(token: string): Promise<DocumentRecord[]> {
-  const response = await fetch(`${resolveApiBase()}/documents?limit=20`, {
+export async function listDocuments(token: string, limit = 20): Promise<DocumentRecord[]> {
+  const response = await fetch(`${resolveApiBase()}/documents?limit=${limit}`, {
     headers: authHeaders(token)
   });
   return parseJsonResponse<DocumentRecord[]>(response);
+}
+
+function parseDownloadFilename(contentDisposition: string | null, fallbackName: string): string {
+  if (!contentDisposition) return fallbackName;
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+  const asciiMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+  if (asciiMatch?.[1]) {
+    return asciiMatch[1];
+  }
+  return fallbackName;
+}
+
+export async function downloadDocument(
+  documentId: string,
+  token: string,
+  fallbackName: string
+): Promise<void> {
+  const response = await fetch(`${resolveApiBase()}/documents/${documentId}/download`, {
+    headers: authHeaders(token)
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Download failed with status ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const downloadName = parseDownloadFilename(response.headers.get("content-disposition"), fallbackName);
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = downloadUrl;
+  anchor.download = downloadName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(downloadUrl);
 }
