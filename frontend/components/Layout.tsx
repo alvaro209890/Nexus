@@ -30,9 +30,11 @@ export default function Layout({ children }: LayoutProps) {
           <div className="mobile-stack md:flex md:items-center md:justify-between md:gap-6">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-[rgba(126,178,214,0.14)] text-sm font-bold text-white">
-                  N
-                </div>
+                <img
+                  src="/nexus-icon.png"
+                  alt="Nexus"
+                  className="h-10 w-10 rounded-xl border border-white/10 object-cover"
+                />
                 <div>
                   <h1 className="font-display text-lg font-bold tracking-tight">Nexus</h1>
                   <p className="eyebrow !text-[0.55rem]">Archive OS</p>
@@ -67,6 +69,11 @@ export default function Layout({ children }: LayoutProps) {
               </nav>
 
               <div className="hidden md:flex md:items-center md:gap-3">
+                <img
+                  src="/nexus-logo.png"
+                  alt="Nexus Gestao de Dados"
+                  className="hidden h-10 w-auto object-contain xl:block"
+                />
                 <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-[rgba(26,31,39,0.72)] px-3 py-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[rgba(126,178,214,0.14)] text-xs font-bold uppercase text-white">
                     {user?.email?.charAt(0) || "U"}
@@ -93,7 +100,10 @@ export default function Layout({ children }: LayoutProps) {
       {/* Global Syncing Overlay */}
       {authSyncing && (
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[rgba(19,23,29,0.78)] backdrop-blur-md">
-          <div className="mb-4 h-16 w-16 rounded-full border-4 border-white/15 border-t-[var(--accent)] animate-spin"></div>
+          <div className="relative mb-4 flex h-16 w-16 items-center justify-center">
+            <div className="absolute inset-0 rounded-full border-4 border-white/15 border-t-[var(--accent)] animate-spin"></div>
+            <img src="/nexus-icon.png" alt="" className="h-10 w-10 rounded-xl object-cover" />
+          </div>
           <p className="eyebrow">Sincronizando ambiente...</p>
         </div>
       )}

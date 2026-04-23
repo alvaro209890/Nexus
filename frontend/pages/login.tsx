@@ -53,16 +53,24 @@ export default function LoginPage() {
         <section className="relative flex flex-col justify-between border-b border-white/10 bg-[rgba(22,27,35,0.92)] p-7 text-white md:p-10 lg:border-b-0 lg:border-r">
           <div className="relative z-10">
             <div className="flex items-center gap-3">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl border border-white/10 bg-[rgba(126,178,214,0.16)] font-display text-xl font-bold text-white shadow-lg">
-                N
-              </div>
+              <img
+                src="/nexus-icon.png"
+                alt="Icone Nexus"
+                className="h-12 w-12 rounded-2xl border border-white/10 object-cover shadow-lg"
+              />
               <div>
                 <p className="font-display text-2xl font-bold">Nexus</p>
                 <p className="text-xs uppercase tracking-[0.16em] text-white/55">Archive OS v1.0</p>
               </div>
             </div>
 
-            <h1 className="mt-12 max-w-2xl font-display text-4xl font-bold leading-tight md:text-6xl">
+            <img
+              src="/nexus-logo.png"
+              alt="Nexus Gestao de Dados"
+              className="mt-12 h-auto w-full max-w-[420px] object-contain"
+            />
+
+            <h1 className="mt-8 max-w-2xl font-display text-4xl font-bold leading-tight md:text-6xl">
               Uma memória operacional para seus documentos.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-white/72 md:text-lg">
