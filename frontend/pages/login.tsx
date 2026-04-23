@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/router";
 import {
   createUserWithEmailAndPassword,
@@ -53,10 +54,12 @@ export default function LoginPage() {
         <section className="relative flex flex-col justify-between border-b border-white/10 bg-[rgba(22,27,35,0.92)] p-7 text-white md:p-10 lg:border-b-0 lg:border-r">
           <div className="relative z-10">
             <div className="flex items-center gap-3">
-              <img
+              <Image
                 src="/nexus-icon.png"
                 alt="Icone Nexus"
-                className="h-12 w-12 rounded-2xl border border-white/10 object-cover shadow-lg"
+                width={48}
+                height={48}
+                className="rounded-2xl border border-white/10 object-cover shadow-lg"
               />
               <div>
                 <p className="font-display text-2xl font-bold">Nexus</p>
@@ -64,9 +67,11 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <img
+            <Image
               src="/nexus-logo.png"
               alt="Nexus Gestao de Dados"
+              width={420}
+              height={120}
               className="mt-12 h-auto w-full max-w-[420px] object-contain"
             />
 

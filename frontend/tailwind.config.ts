@@ -20,8 +20,8 @@ const config: Config = {
         panel: "0 24px 80px rgba(16, 24, 32, 0.16)"
       },
       fontFamily: {
-        display: ["Space Grotesk", "ui-sans-serif"],
-        body: ["IBM Plex Sans", "ui-sans-serif"]
+        display: ["var(--font-display)", "ui-sans-serif", "system-ui"],
+        body: ["var(--font-body)", "ui-sans-serif", "system-ui"]
       }
     }
   },

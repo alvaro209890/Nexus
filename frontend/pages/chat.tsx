@@ -8,6 +8,7 @@ import {
   deleteChatSession,
   getChatSession,
   listChatSessions,
+  renameChatSession,
   sendChatMessage
 } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
@@ -33,7 +34,10 @@ export default function ChatPage() {
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const [isRenamingSession, setIsRenamingSession] = useState(false);
   const [isContextOpen, setIsContextOpen] = useState(true);
+  const [editingSessionId, setEditingSessionId] = useState("");
+  const [editingTitle, setEditingTitle] = useState("");
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -147,6 +151,45 @@ export default function ChatPage() {
     }
   }
 
+  function startRenaming(session: ChatSessionSummary) {
+    setEditingSessionId(session.session_id);
+    setEditingTitle(session.title);
+    setError("");
+  }
+
+  function cancelRenaming() {
+    setEditingSessionId("");
+    setEditingTitle("");
+  }
+
+  async function submitRename(sessionId: string) {
+    const cleanTitle = editingTitle.trim();
+    if (!cleanTitle) {
+      setError("Informe um nome válido para a conversa.");
+      return;
+    }
+
+    setIsRenamingSession(true);
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      const updated = await renameChatSession(sessionId, cleanTitle, token);
+      setSessions((current) =>
+        current
+          .map((session) => (session.session_id === updated.session_id ? { ...session, title: updated.title, updated_at: updated.updated_at } : session))
+          .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+      );
+      if (activeSessionId === updated.session_id) {
+        setMessages((current) => [...current]);
+      }
+      cancelRenaming();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao renomear o chat.");
+    } finally {
+      setIsRenamingSession(false);
+    }
+  }
+
   async function handleChat(event: FormEvent) {
     event.preventDefault();
     const cleanMessage = chatInput.trim();
@@ -243,31 +286,83 @@ export default function ChatPage() {
                   key={session.session_id}
                   className={`chat-session-card ${session.session_id === activeSessionId ? "chat-session-card-active" : ""}`}
                 >
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 text-left"
-                    onClick={() => void loadChatSession(session.session_id)}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="truncate text-xs font-bold">{session.title}</p>
-                      <span className="chat-session-badge">{session.turn_count}</span>
-                    </div>
-                    <p className="mt-1.5 line-clamp-2 text-[0.7rem] leading-relaxed text-slateblue/75">
-                      {session.last_message_preview || "Chat pronto para iniciar."}
-                    </p>
-                    <p className="mt-2.5 text-[0.6rem] font-bold uppercase tracking-[0.2em] text-slateblue/45">
-                      Atualizado em {formatDateTime(session.updated_at)}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    className="chat-session-delete"
-                    onClick={() => void handleDeleteSession(session.session_id)}
-                    disabled={isDeletingSession}
-                    aria-label={`Excluir chat ${session.title}`}
-                  >
-                    <TrashIcon />
-                  </button>
+                  <div className="min-w-0 flex-1">
+                    {editingSessionId === session.session_id ? (
+                      <div className="space-y-2">
+                        <input
+                          value={editingTitle}
+                          onChange={(event) => setEditingTitle(event.target.value)}
+                          className="chat-session-inline-edit"
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void submitRename(session.session_id);
+                            }
+                            if (event.key === "Escape") {
+                              cancelRenaming();
+                            }
+                          }}
+                          autoFocus
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            className="!min-h-[2.35rem] !px-3 !text-sm"
+                            isLoading={isRenamingSession}
+                            onClick={() => void submitRename(session.session_id)}
+                          >
+                            Salvar
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="!min-h-[2.35rem] !px-3 !text-sm"
+                            onClick={cancelRenaming}
+                            disabled={isRenamingSession}
+                          >
+                            Cancelar
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => void loadChatSession(session.session_id)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="truncate text-xs font-bold">{session.title}</p>
+                          <span className="chat-session-badge">{session.turn_count}</span>
+                        </div>
+                        <p className="mt-1.5 line-clamp-2 text-[0.78rem] leading-relaxed text-slateblue/75">
+                          {session.last_message_preview || "Chat pronto para iniciar."}
+                        </p>
+                        <p className="mt-2.5 text-[0.62rem] font-bold uppercase tracking-[0.2em] text-slateblue/45">
+                          Atualizado em {formatDateTime(session.updated_at)}
+                        </p>
+                      </button>
+                    )}
+                  </div>
+                  <div className="chat-session-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => startRenaming(session)}
+                      disabled={isRenamingSession || isDeletingSession}
+                      aria-label={`Renomear chat ${session.title}`}
+                    >
+                      <EditIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-session-delete"
+                      onClick={() => void handleDeleteSession(session.session_id)}
+                      disabled={isDeletingSession}
+                      aria-label={`Excluir chat ${session.title}`}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
                 </div>
               ))
             )}
@@ -279,7 +374,19 @@ export default function ChatPage() {
             <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <p className="eyebrow">Conversa Ativa</p>
-                <h2 className="mt-1 text-lg font-bold">{activeSession?.title || "Novo chat"}</h2>
+                <div className="mt-1 flex items-center gap-2">
+                  <h2 className="text-lg font-bold">{activeSession?.title || "Novo chat"}</h2>
+                  {activeSession && (
+                    <button
+                      type="button"
+                      className="icon-button !p-2"
+                      onClick={() => startRenaming(activeSession)}
+                      aria-label="Renomear conversa ativa"
+                    >
+                      <EditIcon />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 <span className="chat-session-meta">{messages.length} msg</span>
@@ -350,6 +457,7 @@ export default function ChatPage() {
                 autoFocus
               />
               <Button type="submit" isLoading={isBusy} className="!rounded-lg px-4">
+                {!isBusy && <SendIcon />}
                 Enviar
               </Button>
             </div>
@@ -471,6 +579,23 @@ function PlusIcon() {
   return (
     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M22 2L11 13" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M22 2L15 22l-4-9-9-4 20-7z" />
     </svg>
   );
 }

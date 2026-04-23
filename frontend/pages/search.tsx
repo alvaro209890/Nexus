@@ -5,6 +5,7 @@ import { GlassCard } from "../components/ui/GlassCard";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
+import { HighlightedText } from "../components/ui/HighlightedText";
 
 export default function SearchPage() {
   const { getCurrentToken } = useAuth();
@@ -39,7 +40,8 @@ export default function SearchPage() {
 
       <GlassCard>
         <form onSubmit={handleSearch} className="flex flex-col gap-3 md:flex-row">
-          <Input 
+          <Input
+            label="Consulta semântica"
             placeholder="Ex.: contrato de suporte, politica de seguranca, termo aditivo 2024"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -78,16 +80,31 @@ export default function SearchPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {results.map((res, index) => (
             <GlassCard key={index} className="result-card flex flex-col">
-              <div className="flex items-start justify-between mb-3">
-                <StatusChip label={res.suggested_name || res.metadata?.filename || "Documento"} variant="info" />
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="file-folder-icon !h-11 !w-11">
+                    <DocumentTypeIcon classification={res.classification || res.metadata?.classification || ""} />
+                  </div>
+                  <div className="min-w-0">
+                    <StatusChip label={res.suggested_name || res.metadata?.filename || "Documento"} variant="info" />
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
+                      {labelForClassification(res.classification || res.metadata?.classification || "")}
+                    </p>
+                  </div>
+                </div>
                 <span className="rounded-md border border-white/10 bg-[rgba(20,25,33,0.72)] px-2 py-1 text-[0.68rem] font-bold text-slateblue">
                   Score: {((res.score ?? 0) * 100).toFixed(1)}%
                 </span>
               </div>
-              <p className="text-sm leading-relaxed text-ink/80 italic flex-1">
-                &ldquo;{res.snippet.length > 300 ? res.snippet.substring(0, 300) + "..." : res.snippet}&rdquo;
+              <p className="flex-1 text-sm italic leading-relaxed text-ink/80">
+                &ldquo;
+                <HighlightedText
+                  text={res.snippet.length > 300 ? `${res.snippet.substring(0, 300)}...` : res.snippet}
+                  query={query}
+                />
+                &rdquo;
               </p>
-              <div className="mt-3 pt-3 border-t border-white/40 flex justify-between items-center text-[0.6rem] font-bold text-slateblue/60 uppercase">
+              <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
                 <span>Página {res.metadata?.page || "?"}</span>
                 <span>Referência: #{res.metadata?.chunk_index || index}</span>
               </div>
@@ -101,5 +118,49 @@ export default function SearchPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function labelForClassification(classification: string): string {
+  const value = classification.trim().toLowerCase();
+  if (value.includes("contrat")) return "Contrato";
+  if (value.includes("polit")) return "Politica";
+  if (value.includes("manual")) return "Manual";
+  if (value.includes("termo")) return "Termo";
+  return "Documento";
+}
+
+function DocumentTypeIcon({ classification }: { classification: string }) {
+  const value = classification.trim().toLowerCase();
+
+  if (value.includes("contrat")) {
+    return (
+      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 7h8M8 11h8M8 15h5M7 3h7l5 5v12a1 1 0 01-1 1H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
+      </svg>
+    );
+  }
+
+  if (value.includes("polit")) {
+    return (
+      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 6V4m0 2a6 6 0 100 12m0-12a6 6 0 110 12m0 0v2m-4-6h8" />
+      </svg>
+    );
+  }
+
+  if (value.includes("manual")) {
+    return (
+      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M6 4h10a2 2 0 012 2v12a1 1 0 01-1.447.894L12 17l-4.553 1.894A1 1 0 016 18V4z" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M14 3v5h5M8 13h8M8 17h5" />
+    </svg>
   );
 }

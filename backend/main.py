@@ -115,6 +115,10 @@ class ChatSessionCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
 
 
+class ChatSessionUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class PersistedChatMessage(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
     content: str
@@ -565,6 +569,26 @@ async def get_chat_session(
         raise HTTPException(status_code=404, detail="Chat session not found.")
     summary = ensure_chat_session_summary(current_user, clean_session_id, messages=messages)
     return ChatSessionDetail(**summary, messages=[PersistedChatMessage(**message) for message in messages])
+
+
+@app.patch("/chat-sessions/{session_id}", response_model=ChatSessionSummary)
+async def update_chat_session(
+    session_id: str,
+    request: ChatSessionUpdateRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> ChatSessionSummary:
+    clean_session_id = safe_session_id(session_id)
+    summary = get_chat_session_summary(current_user, clean_session_id)
+    messages = load_chat_messages(current_user, clean_session_id)
+    if summary is None and not messages:
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    updated = ensure_chat_session_summary(
+        current_user,
+        clean_session_id,
+        title=request.title.strip(),
+        messages=messages,
+    )
+    return ChatSessionSummary(**updated)
 
 
 @app.delete("/chat-sessions/{session_id}")

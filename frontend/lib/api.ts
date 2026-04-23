@@ -267,6 +267,19 @@ export async function getChatSession(sessionId: string, token: string): Promise<
   return parseJsonResponse<ChatSessionDetail>(response);
 }
 
+export async function renameChatSession(
+  sessionId: string,
+  title: string,
+  token: string
+): Promise<ChatSessionSummary> {
+  const response = await fetch(`${resolveApiBase()}/chat-sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ title })
+  });
+  return parseJsonResponse<ChatSessionSummary>(response);
+}
+
 export async function deleteChatSession(sessionId: string, token: string): Promise<{ session_id: string; status: string }> {
   const response = await fetch(`${resolveApiBase()}/chat-sessions/${sessionId}`, {
     method: "DELETE",

@@ -5,6 +5,9 @@ import { createFolder, DocumentRecord, downloadDocument, FolderRecord, listDocum
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
+import { Dialog } from "../components/ui/Dialog";
+import { Input } from "../components/ui/Input";
+import { Breadcrumbs } from "../components/ui/Breadcrumbs";
 
 type FolderNode = {
   path: string;
@@ -27,6 +30,8 @@ export default function FilesPage() {
   const [downloadingId, setDownloadingId] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [isFolderDialogOpen, setIsFolderDialogOpen] = useState(false);
+  const [folderName, setFolderName] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -92,19 +97,24 @@ export default function FilesPage() {
   }
 
   async function handleCreateFolder() {
-    const folderName = window.prompt("Nome da nova pasta");
-    if (!folderName) return;
+    const cleanFolderName = folderName.trim();
+    if (!cleanFolderName) {
+      setError("Informe um nome para a nova pasta.");
+      return;
+    }
 
     setCreatingFolder(true);
     setError("");
     try {
       const token = await getCurrentToken();
-      const createdFolder = await createFolder(folderName, currentPath, token);
+      const createdFolder = await createFolder(cleanFolderName, currentPath, token);
       setFolders((current) => {
         const existing = current.some((folder) => folder.path === createdFolder.path);
         return existing ? current : [...current, createdFolder].sort((left, right) => left.path.localeCompare(right.path, "pt-BR"));
       });
       selectFolder(createdFolder.path);
+      setFolderName("");
+      setIsFolderDialogOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nao foi possivel criar a pasta.");
     } finally {
@@ -165,7 +175,7 @@ export default function FilesPage() {
         </div>
       </header>
 
-      <GlassCard className="!p-3 border-white/60">
+      <GlassCard className="!p-4 border-white/60">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap gap-2">
@@ -173,7 +183,7 @@ export default function FilesPage() {
                 variant="ghost"
                 className="!py-2 !px-4 !text-sm"
                 isLoading={creatingFolder}
-                onClick={() => void handleCreateFolder()}
+                onClick={() => setIsFolderDialogOpen(true)}
               >
                 <FolderAddIcon />
                 Nova pasta
@@ -199,51 +209,35 @@ export default function FilesPage() {
           </div>
 
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-1 text-[0.7rem] font-bold text-slateblue/80">
-            <button
-              type="button"
-              onClick={() => selectFolder("")}
-              className={`rounded-md px-2 py-1 transition-all ${currentPath === "" ? "bg-ink text-white shadow-md" : "hover:bg-white/60"}`}
-            >
-              Raiz
-            </button>
-            {breadcrumbs.map((crumb) => (
-              <div key={crumb.path} className="flex items-center gap-1">
-                <span className="text-slateblue/30">/</span>
-                <button
-                  type="button"
-                  onClick={() => selectFolder(crumb.path)}
-                  className={`rounded-md px-2 py-1 transition-all truncate max-w-[120px] ${crumb.path === currentPath ? "bg-ink text-white shadow-md" : "hover:bg-white/60"}`}
-                >
-                  {crumb.label}
-                </button>
-              </div>
-            ))}
-          </div>
+            <Breadcrumbs
+              items={breadcrumbs.map((crumb) => ({ label: crumb.label, value: crumb.path }))}
+              currentValue={currentPath}
+              onSelect={selectFolder}
+            />
 
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-            <div className="relative flex-1 sm:min-w-[280px]">
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                className="field !rounded-xl !py-2 !pl-9 !text-xs"
-                placeholder="Filtrar por nome, autor, tag ou pasta"
-              />
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slateblue/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
+              <div className="relative flex-1 sm:min-w-[280px]">
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className="field !rounded-xl !py-3 !pl-10 !text-sm"
+                  placeholder="Filtrar por nome, autor, tag ou pasta"
+                />
+                <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slateblue/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <Button
+                variant="secondary"
+                className="!py-2 !px-4 !text-sm"
+                onClick={() => void loadData()}
+                aria-label="Atualizar lista de arquivos"
+              >
+                <RefreshIcon />
+                Atualizar
+              </Button>
             </div>
-            <Button
-              variant="secondary"
-              className="!py-2 !px-4 !text-xs"
-              onClick={() => void loadData()}
-              aria-label="Atualizar lista de arquivos"
-            >
-              <RefreshIcon />
-              Atualizar
-            </Button>
           </div>
-        </div>
         </div>
       </GlassCard>
 
@@ -477,6 +471,35 @@ export default function FilesPage() {
            </GlassCard>
         </div>
       </div>
+
+      <Dialog
+        open={isFolderDialogOpen}
+        title="Criar nova pasta"
+        description="Organize documentos em um diretório lógico sem sair do fluxo principal."
+        onClose={() => {
+          if (creatingFolder) return;
+          setIsFolderDialogOpen(false);
+          setFolderName("");
+        }}
+        footer={
+          <>
+            <Button variant="ghost" type="button" onClick={() => setIsFolderDialogOpen(false)} disabled={creatingFolder}>
+              Cancelar
+            </Button>
+            <Button type="button" isLoading={creatingFolder} onClick={() => void handleCreateFolder()}>
+              Criar pasta
+            </Button>
+          </>
+        }
+      >
+        <Input
+          label="Nome da pasta"
+          placeholder="Ex.: contratos, politicas, fiscal/2026"
+          value={folderName}
+          onChange={(event) => setFolderName(event.target.value)}
+          autoFocus
+        />
+      </Dialog>
     </div>
   );
 }

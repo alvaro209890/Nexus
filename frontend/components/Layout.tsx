@@ -1,5 +1,6 @@
 import React, { ReactNode } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -29,15 +30,17 @@ export default function Layout({ children }: LayoutProps) {
         <div className="page-container">
           <div className="mobile-stack md:flex md:items-center md:justify-between md:gap-6">
             <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <img
+              <div className="flex items-center gap-3 rounded-[1.25rem] border border-white/10 bg-white/5 px-3 py-2">
+                <Image
                   src="/nexus-icon.png"
                   alt="Nexus"
-                  className="h-10 w-10 rounded-xl border border-white/10 object-cover"
+                  width={40}
+                  height={40}
+                  className="rounded-xl border border-white/10 object-cover"
                 />
                 <div>
-                  <h1 className="font-display text-lg font-bold tracking-tight">Nexus</h1>
-                  <p className="eyebrow !text-[0.55rem]">Archive OS</p>
+                  <h1 className="font-display text-lg font-bold tracking-tight text-white">Nexus</h1>
+                  <p className="eyebrow !text-[0.58rem]">Archive OS</p>
                 </div>
               </div>
 
@@ -69,9 +72,11 @@ export default function Layout({ children }: LayoutProps) {
               </nav>
 
               <div className="hidden md:flex md:items-center md:gap-3">
-                <img
+                <Image
                   src="/nexus-logo.png"
                   alt="Nexus Gestao de Dados"
+                  width={180}
+                  height={40}
                   className="hidden h-10 w-auto object-contain xl:block"
                 />
                 <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-[rgba(26,31,39,0.72)] px-3 py-2">
@@ -102,7 +107,7 @@ export default function Layout({ children }: LayoutProps) {
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[rgba(19,23,29,0.78)] backdrop-blur-md">
           <div className="relative mb-4 flex h-16 w-16 items-center justify-center">
             <div className="absolute inset-0 rounded-full border-4 border-white/15 border-t-[var(--accent)] animate-spin"></div>
-            <img src="/nexus-icon.png" alt="" className="h-10 w-10 rounded-xl object-cover" />
+            <Image src="/nexus-icon.png" alt="" width={40} height={40} className="rounded-xl object-cover" />
           </div>
           <p className="eyebrow">Sincronizando ambiente...</p>
         </div>

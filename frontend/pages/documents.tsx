@@ -162,6 +162,23 @@ export default function DocumentsPage() {
                 <div className="progress-track">
                   <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
                 </div>
+                <div className="progress-step-list pt-2">
+                  <ProgressStep
+                    label="Upload do arquivo"
+                    description="Transferencia local do PDF para o workspace seguro."
+                    state={uploadProgress >= 100 ? "done" : uploadProgress > 0 ? "active" : "idle"}
+                  />
+                  <ProgressStep
+                    label="Processamento"
+                    description="Leitura do conteúdo e preparação dos metadados."
+                    state={isBusy && uploadProgress >= 100 ? "active" : !isBusy && uploadProgress >= 100 ? "done" : "idle"}
+                  />
+                  <ProgressStep
+                    label="Indexação concluída"
+                    description="Documento pronto para busca, chat e organização."
+                    state={!isBusy && uploadProgress >= 100 ? "done" : "idle"}
+                  />
+                </div>
               </div>
             )}
 
@@ -226,9 +243,9 @@ export default function DocumentsPage() {
                       <td className="text-[0.8rem]">{new Date(doc.uploaded_at).toLocaleDateString()}</td>
                       <td>{doc.chunks_indexed}</td>
                       <td>
-                        <StatusChip 
-                          label={doc.classification || "PDF"} 
-                          variant={doc.chunks_indexed > 0 ? "success" : "warning"} 
+                        <StatusChip
+                          label={doc.chunks_indexed > 0 ? `${doc.classification || "PDF"} • indexado` : `${doc.classification || "PDF"} • processando`}
+                          variant={doc.chunks_indexed > 0 ? "success" : "warning"}
                         />
                       </td>
                     </tr>
@@ -239,6 +256,29 @@ export default function DocumentsPage() {
           </div>
         </GlassCard>
       </div>
+    </div>
+  );
+}
+
+function ProgressStep({
+  label,
+  description,
+  state
+}: {
+  label: string;
+  description: string;
+  state: "idle" | "active" | "done";
+}) {
+  return (
+    <div className={`progress-step ${state === "active" ? "progress-step-active" : ""} ${state === "done" ? "progress-step-done" : ""}`}>
+      <span className="progress-step-dot" />
+      <div>
+        <p className="text-sm font-semibold text-white">{label}</p>
+        <p className="text-xs text-slateblue/70">{description}</p>
+      </div>
+      <span className="text-[0.7rem] font-bold uppercase tracking-[0.08em] text-slateblue/60">
+        {state === "done" ? "ok" : state === "active" ? "em curso" : "aguardando"}
+      </span>
     </div>
   );
 }
