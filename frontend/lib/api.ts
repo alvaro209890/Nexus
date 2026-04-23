@@ -71,7 +71,32 @@ export type DocumentRecord = {
   uploaded_at: string;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:18000";
+const LOCAL_API_BASE = "http://127.0.0.1:18000";
+const PUBLIC_API_BASE = "https://nexus-api.cursar.space";
+
+function resolveApiBase(): string {
+  const configuredBase = process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
+
+  if (typeof window === "undefined") {
+    if (!configuredBase) return PUBLIC_API_BASE;
+    if (configuredBase.includes("127.0.0.1") || configuredBase.includes("localhost")) {
+      return PUBLIC_API_BASE;
+    }
+    return configuredBase;
+  }
+
+  const hostname = window.location.hostname;
+  const isLocalBrowser = hostname === "localhost" || hostname === "127.0.0.1";
+
+  if (configuredBase) {
+    if (configuredBase.includes("127.0.0.1") || configuredBase.includes("localhost")) {
+      return isLocalBrowser ? configuredBase : PUBLIC_API_BASE;
+    }
+    return configuredBase;
+  }
+
+  return isLocalBrowser ? LOCAL_API_BASE : PUBLIC_API_BASE;
+}
 
 function authHeaders(token: string, headers: HeadersInit = {}): HeadersInit {
   return {
@@ -101,7 +126,7 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 }
 
 export async function syncAuthenticatedUser(token: string): Promise<AuthenticatedUserProfile> {
-  const response = await fetch(`${API_BASE}/auth/sync`, {
+  const response = await fetch(`${resolveApiBase()}/auth/sync`, {
     method: "POST",
     headers: authHeaders(token)
   });
@@ -111,7 +136,7 @@ export async function syncAuthenticatedUser(token: string): Promise<Authenticate
 export async function uploadDocument(file: File, token: string): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${API_BASE}/upload-document`, {
+  const response = await fetch(`${resolveApiBase()}/upload-document`, {
     method: "POST",
     headers: authHeaders(token),
     body: formData
@@ -121,7 +146,7 @@ export async function uploadDocument(file: File, token: string): Promise<UploadR
 
 export async function searchSemantic(query: string, token: string): Promise<SearchResult[]> {
   const params = new URLSearchParams({ query, limit: "6" });
-  const response = await fetch(`${API_BASE}/search-semantic?${params.toString()}`, {
+  const response = await fetch(`${resolveApiBase()}/search-semantic?${params.toString()}`, {
     headers: authHeaders(token)
   });
   return parseJsonResponse<SearchResult[]>(response);
@@ -133,7 +158,7 @@ export async function sendChatMessage(
   sessionId: string,
   token: string
 ): Promise<ChatResponse> {
-  const response = await fetch(`${API_BASE}/chat`, {
+  const response = await fetch(`${resolveApiBase()}/chat`, {
     method: "POST",
     headers: authHeaders(token, { "Content-Type": "application/json" }),
     body: JSON.stringify({ message, history, session_id: sessionId, limit: 5 })
@@ -142,7 +167,7 @@ export async function sendChatMessage(
 }
 
 export async function listDocuments(token: string): Promise<DocumentRecord[]> {
-  const response = await fetch(`${API_BASE}/documents?limit=20`, {
+  const response = await fetch(`${resolveApiBase()}/documents?limit=20`, {
     headers: authHeaders(token)
   });
   return parseJsonResponse<DocumentRecord[]>(response);
