@@ -31,59 +31,59 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header>
-        <h1 className="text-4xl font-bold tracking-tight">Busca Semântica</h1>
-        <p className="text-slateblue mt-2">Localize informações precisas em toda a sua base de documentos.</p>
+        <h1 className="text-2xl font-bold tracking-tight">Busca Semântica</h1>
+        <p className="text-slateblue text-sm mt-1.5">Localize informações precisas em toda a sua base de documentos.</p>
       </header>
 
       <GlassCard>
-        <form onSubmit={handleSearch} className="flex gap-4">
+        <form onSubmit={handleSearch} className="flex gap-3">
           <Input 
-            placeholder="O que você está procurando hoje? Ex: 'contratos de tecnologia' ou 'prazos de entrega'..."
+            placeholder="O que você está procurando hoje? Ex: 'contratos de tecnologia'..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="!rounded-full px-6"
+            className="!rounded-full px-4"
           />
-          <Button type="submit" isLoading={isBusy} className="px-8 min-w-[140px]">
+          <Button type="submit" isLoading={isBusy} className="px-6 min-w-[120px]">
             Pesquisar
           </Button>
         </form>
       </GlassCard>
 
-      <div className="space-y-6">
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="eyebrow">{results.length > 0 ? `Encontrados ${results.length} resultados relevantes` : "Resultados"}</p>
         </div>
 
         {error && (
-          <div className="p-4 rounded-2xl bg-red-50 border border-red-100 text-red-600 font-semibold text-sm">
+          <div className="p-3 rounded-lg bg-red-50 border border-red-100 text-red-600 font-semibold text-xs">
             {error}
           </div>
         )}
 
         {results.length === 0 && !isBusy && !error && (
-          <div className="text-center py-20 bg-white/30 rounded-[2rem] border border-dashed border-slateblue/20">
-            <svg className="w-16 h-16 mx-auto mb-4 text-slateblue/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="text-center py-12 bg-white/30 rounded-xl border border-dashed border-slateblue/20">
+            <svg className="w-12 h-12 mx-auto mb-3 text-slateblue/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <p className="text-slateblue/60 font-medium italic">Aguardando entrada para consulta vetorial...</p>
+            <p className="text-slateblue/60 text-sm font-medium italic">Aguardando entrada para consulta vetorial...</p>
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {results.map((res, index) => (
             <GlassCard key={index} className="result-card flex flex-col">
-              <div className="flex items-start justify-between mb-4">
+              <div className="flex items-start justify-between mb-3">
                 <StatusChip label={res.suggested_name || res.metadata?.filename || "Documento"} variant="info" />
-                <span className="text-[0.6rem] font-bold text-slateblue uppercase tracking-widest bg-white/50 px-2 py-1 rounded-md border border-white/60">
+                <span className="text-[0.55rem] font-bold text-slateblue uppercase tracking-widest bg-white/50 px-2 py-1 rounded-md border border-white/60">
                   Score: {((res.score ?? 0) * 100).toFixed(1)}%
                 </span>
               </div>
               <p className="text-sm leading-relaxed text-ink/80 italic flex-1">
                 &ldquo;{res.snippet.length > 300 ? res.snippet.substring(0, 300) + "..." : res.snippet}&rdquo;
               </p>
-              <div className="mt-4 pt-4 border-t border-white/40 flex justify-between items-center text-[0.65rem] font-bold text-slateblue/60 uppercase">
+              <div className="mt-3 pt-3 border-t border-white/40 flex justify-between items-center text-[0.6rem] font-bold text-slateblue/60 uppercase">
                 <span>Página {res.metadata?.page || "?"}</span>
                 <span>Referência: #{res.metadata?.chunk_index || index}</span>
               </div>

@@ -423,22 +423,25 @@ async def chat(
 ) -> dict[str, Any]:
     ensure_groq_configured()
 
-    lookup_references = lookup_specific_documents_with_groq(
-        current_user=current_user,
-        user_message=request.message,
-        limit=request.limit,
-    )
-    semantic_references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
-    references = merge_search_results(
-        [lookup_references, semantic_references],
-        limit=request.limit,
-        dedupe_by_document=True,
-    )
+    should_search_documents = should_use_document_context(request.message)
+    references: list[SearchResult] = []
+    if should_search_documents:
+        lookup_references = lookup_specific_documents_with_groq(
+            current_user=current_user,
+            user_message=request.message,
+            limit=request.limit,
+        )
+        semantic_references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
+        references = merge_search_results(
+            [lookup_references, semantic_references],
+            limit=request.limit,
+            dedupe_by_document=True,
+        )
 
     context = build_rag_context(current_user, references)
     session_id = safe_session_id(request.session_id)
     persistent_history = load_session_memory(current_user, session_id)
-    messages = build_chat_messages(request, context, persistent_history)
+    messages = build_chat_messages(request, context, persistent_history, should_search_documents)
 
     client = get_groq_client()
     response = client.chat.completions.create(
@@ -1574,6 +1577,86 @@ def lookup_specific_documents_with_groq(
     )
 
 
+def should_use_document_context(user_message: str) -> bool:
+    normalized = normalize_search_text(user_message)
+    if not normalized:
+        return False
+
+    tokens = set(normalized.split("-"))
+    document_terms = {
+        "arquivo",
+        "arquivos",
+        "documento",
+        "documentos",
+        "pdf",
+        "pdfs",
+        "acervo",
+        "fonte",
+        "fontes",
+        "manifesto",
+        "pasta",
+        "pastas",
+        "anexo",
+        "anexos",
+        "contrato",
+        "contratos",
+        "manual",
+        "manuais",
+        "lei",
+        "leis",
+        "nota",
+        "notas",
+        "relatorio",
+        "relatorios",
+    }
+    action_terms = {
+        "procure",
+        "procurar",
+        "busque",
+        "buscar",
+        "pesquise",
+        "pesquisar",
+        "encontre",
+        "encontrar",
+        "localize",
+        "localizar",
+        "ache",
+        "achar",
+        "mostre",
+        "mostrar",
+        "liste",
+        "listar",
+        "resuma",
+        "resumir",
+        "resumo",
+        "cite",
+        "citar",
+        "referencie",
+        "referenciar",
+    }
+    archive_phrases = (
+        "no-meu-acervo",
+        "nos-meus-arquivos",
+        "nos-arquivos",
+        "nos-documentos",
+        "na-base",
+        "na-minha-base",
+        "na-pasta",
+        "nas-pastas",
+        "do-pdf",
+        "do-documento",
+        "do-arquivo",
+        "segundo-o",
+        "com-base-no",
+    )
+
+    if tokens & document_terms:
+        return True
+    if (tokens & action_terms) and any(phrase in normalized for phrase in archive_phrases):
+        return True
+    return any(phrase in normalized for phrase in archive_phrases)
+
+
 def is_path_within(base: Path, path: Path) -> bool:
     try:
         path.resolve().relative_to(base.resolve())
@@ -1612,14 +1695,17 @@ def build_chat_messages(
     request: ChatRequest,
     context: str,
     persistent_history: list[dict[str, Any]],
+    searched_documents: bool,
 ) -> list[dict[str, str]]:
     system_prompt = (
-        "You are Nexus, a precise assistant for a private document archive. "
+        "Your name is Nexus. You are a precise, pragmatic and careful AI assistant for a private document archive. "
         "Each authenticated user has a fully isolated workspace with isolated documents and memory. "
-        "DeepSeek organizes incoming files, while you on Groq help locate the right document and answer quickly. "
-        "Answer in the user's language. Use only the supplied context when citing documents. "
-        "If the context is insufficient, say what is missing. Include concise references. "
-        "Use the persistent session memory to preserve user preferences and prior conclusions."
+        "DeepSeek organizes incoming files, while you help reason, locate the right document and answer quickly. "
+        "Do not search or imply that you searched user files unless document context was supplied. "
+        "For general questions, answer directly from reasoning and persistent memory. "
+        "For document questions, use only supplied context when citing documents; if it is insufficient, say what is missing. "
+        "Prefer concise, actionable answers, ask a clarifying question when the request is ambiguous, and never invent references. "
+        "Answer in the user's language and use persistent session memory to preserve user preferences and prior conclusions."
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
@@ -1630,10 +1716,12 @@ def build_chat_messages(
     for item in request.history[-10:]:
         messages.append({"role": item.role, "content": item.content})
 
-    user_prompt = (
-        f"Contexto recuperado:\n{context or 'Nenhum documento relevante encontrado.'}\n\n"
-        f"Pergunta do usuario:\n{request.message}"
-    )
+    if searched_documents:
+        context_block = context or "Busca em documentos executada, mas nenhum documento relevante foi encontrado."
+    else:
+        context_block = "Busca em documentos nao executada porque a mensagem nao pediu arquivos ou acervo."
+
+    user_prompt = f"Contexto:\n{context_block}\n\nPergunta do usuario:\n{request.message}"
     messages.append({"role": "user", "content": user_prompt})
     return messages
 

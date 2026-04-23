@@ -7,7 +7,7 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 
 export function Input({ label, error, className = "", ...props }: InputProps) {
   return (
-    <div className="w-full flex flex-col gap-1.5">
+    <div className="w-full flex flex-col gap-1">
       {label && <span className="eyebrow ml-1">{label}</span>}
       <input 
         className={`field ${error ? "border-red-500" : ""} ${className}`} 
