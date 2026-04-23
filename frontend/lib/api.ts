@@ -10,6 +10,16 @@ export type UploadResponse = {
   message?: string;
 };
 
+export type UploadBatchResponse = {
+  results: UploadResponse[];
+  errors: Array<{
+    filename: string;
+    detail: string;
+  }>;
+  uploaded_count: number;
+  failed_count: number;
+};
+
 export type SearchResult = {
   document_id: string;
   chunk_id: string;
@@ -94,6 +104,11 @@ export type DocumentRecord = {
   folder_confidence?: number | null;
   title_confidence?: number | null;
   review_status?: string | null;
+  processing_status?: string | null;
+  processing_progress?: number | null;
+  processing_error?: string | null;
+  processing_started_at?: string | null;
+  processing_completed_at?: string | null;
   pdf_path: string;
   markdown_path: string;
   chunks_indexed: number;
@@ -230,6 +245,67 @@ export async function uploadDocument(
   });
 }
 
+export async function uploadDocuments(
+  files: File[],
+  token: string,
+  onProgress?: (progress: number) => void
+): Promise<UploadBatchResponse> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+
+  return new Promise<UploadBatchResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${resolveApiBase()}/upload-documents`);
+
+    const headers = authHeaders(token);
+    Object.entries(headers).forEach(([key, value]) => {
+      if (typeof value === "string") {
+        xhr.setRequestHeader(key, value);
+      }
+    });
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable || !onProgress) return;
+      onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    });
+
+    xhr.addEventListener("load", () => {
+      const contentType = xhr.getResponseHeader("content-type") || "";
+      const responseText = xhr.responseText || "";
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        try {
+          const payload = contentType.includes("application/json") ? JSON.parse(responseText) : null;
+          const detail =
+            typeof payload?.detail === "string"
+              ? payload.detail
+              : typeof payload?.message === "string"
+                ? payload.message
+                : responseText;
+          reject(new Error(detail || `Request failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(responseText || `Request failed with status ${xhr.status}`));
+        }
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(responseText) as UploadBatchResponse;
+        onProgress?.(100);
+        resolve(payload);
+      } catch {
+        reject(new Error("Resposta inválida do servidor ao enviar documentos."));
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Falha de conexão durante o upload dos documentos."));
+    });
+
+    xhr.send(formData);
+  });
+}
+
 export async function searchSemantic(query: string, token: string): Promise<SearchResult[]> {
   const params = new URLSearchParams({ query, limit: "6" });
   const response = await fetch(`${resolveApiBase()}/search-semantic?${params.toString()}`, {
@@ -356,4 +432,15 @@ export async function downloadDocument(
   anchor.click();
   anchor.remove();
   window.URL.revokeObjectURL(downloadUrl);
+}
+
+export async function deleteDocument(
+  documentId: string,
+  token: string
+): Promise<{ document_id: string; status: string }> {
+  const response = await fetch(`${resolveApiBase()}/documents/${documentId}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<{ document_id: string; status: string }>(response);
 }

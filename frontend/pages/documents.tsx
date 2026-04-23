@@ -1,15 +1,17 @@
 import { DragEvent, useState, useEffect, FormEvent, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { DocumentRecord, listDocuments, uploadDocument } from "../lib/api";
+import { DocumentRecord, listDocuments, uploadDocuments } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
 import { FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2 } from "lucide-react";
 
+const ACTIVE_PROCESSING_STATUSES = new Set(["queued", "extracting", "classifying", "indexing"]);
+
 export default function DocumentsPage() {
   const { user, getCurrentToken, authProfile } = useAuth();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadStatus, setUploadStatus] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
@@ -31,6 +33,27 @@ export default function DocumentsPage() {
     }
   }, [user, authProfile, getCurrentToken]);
 
+  useEffect(() => {
+    if (!user || !authProfile) return;
+    if (!documents.some((document) => isDocumentProcessing(document))) return;
+
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        try {
+          const token = await getCurrentToken();
+          const docs = await listDocuments(token);
+          setDocuments(docs);
+        } catch (err) {
+          console.error("Failed to refresh documents", err);
+        }
+      })();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [documents, user, authProfile, getCurrentToken]);
+
   async function refreshDocuments() {
     try {
       const token = await getCurrentToken();
@@ -43,26 +66,52 @@ export default function DocumentsPage() {
 
   async function handleUpload(event: FormEvent) {
     event.preventDefault();
-    if (!selectedFile) return;
-    const validationError = validateFile(selectedFile);
-    if (validationError) {
-      setError(validationError);
+    if (selectedFiles.length === 0) return;
+
+    const firstValidationError = selectedFiles
+      .map((file) => validateFile(file))
+      .find((value): value is string => Boolean(value));
+
+    if (firstValidationError) {
+      setError(firstValidationError);
       return;
     }
 
     setIsBusy(true);
     setError("");
     setUploadProgress(0);
-    setUploadStatus("Enviando documento. Arquivos maiores podem levar mais tempo.");
+    setUploadStatus(
+      selectedFiles.length === 1
+        ? "Enviando documento. Arquivos maiores podem levar mais tempo."
+        : `Enviando ${selectedFiles.length} documentos. O processamento pode levar alguns minutos.`
+    );
     try {
       const token = await getCurrentToken();
-      const result = await uploadDocument(selectedFile, token, setUploadProgress);
-      setUploadStatus(
-        result.duplicate
-          ? "Este documento já estava indexado. O registro existente foi reutilizado."
-          : "Documento enviado e indexado com sucesso."
-      );
-      setSelectedFile(null);
+      const result = await uploadDocuments(selectedFiles, token, setUploadProgress);
+
+      if (result.failed_count > 0) {
+        setError(result.errors[0]?.detail || "Falha parcial no envio dos documentos.");
+      }
+
+      if (result.uploaded_count > 0) {
+        const duplicates = result.results.filter((item) => item.duplicate).length;
+        const queued = result.uploaded_count - duplicates;
+        const messages = [];
+        if (queued > 0) {
+          messages.push(queued === 1 ? "1 documento entrou na fila de processamento." : `${queued} documentos entraram na fila de processamento.`);
+        }
+        if (duplicates > 0) {
+          messages.push(duplicates === 1 ? "1 duplicado reaproveitado." : `${duplicates} duplicados reaproveitados.`);
+        }
+        if (result.failed_count > 0) {
+          messages.push(result.failed_count === 1 ? "1 arquivo falhou." : `${result.failed_count} arquivos falharam.`);
+        }
+        setUploadStatus(messages.join(" "));
+      } else {
+        setUploadStatus("");
+      }
+
+      setSelectedFiles([]);
       setUploadProgress(100);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -77,15 +126,18 @@ export default function DocumentsPage() {
     }
   }
 
-  function handleFileSelection(file: File | null) {
+  function handleFileSelection(files: File[]) {
     setError("");
     setUploadStatus("");
     setUploadProgress(0);
-    setSelectedFile(file);
+    setSelectedFiles(files);
 
-    if (!file) return;
+    if (files.length === 0) return;
 
-    const validationError = validateFile(file);
+    const validationError = files
+      .map((file) => validateFile(file))
+      .find((value): value is string => Boolean(value));
+
     if (validationError) {
       setError(validationError);
     }
@@ -94,8 +146,7 @@ export default function DocumentsPage() {
   function handleDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     setIsDragging(false);
-    const file = event.dataTransfer.files?.[0] || null;
-    handleFileSelection(file);
+    handleFileSelection(Array.from(event.dataTransfer.files || []));
   }
 
   const formatDocName = (name: string) => {
@@ -136,21 +187,25 @@ export default function DocumentsPage() {
                 type="file" 
                 className="hidden" 
                 accept=".pdf" 
+                multiple
                 disabled={isBusy}
                 onChange={(event) => {
-                  const file = event.target.files?.[0] || null;
-                  handleFileSelection(file);
+                  handleFileSelection(Array.from(event.target.files || []));
                 }}
               />
               <div className="text-center z-10 flex flex-col items-center">
-                {selectedFile ? (
+                {selectedFiles.length > 0 ? (
                   <FileCheck2 className="w-12 h-12 text-success mb-3" />
                 ) : (
                   <UploadCloud className="w-12 h-12 text-accent-strong mb-3" />
                 )}
                 
                 <p className="text-sm font-bold text-primary mb-1">
-                  {selectedFile ? selectedFile.name : "Arraste um PDF ou clique para buscar"}
+                  {selectedFiles.length === 0
+                    ? "Arraste PDFs ou clique para buscar"
+                    : selectedFiles.length === 1
+                      ? selectedFiles[0].name
+                      : `${selectedFiles.length} arquivos prontos para envio`}
                 </p>
                 <p className="text-xs text-secondary">
                   Formatos aceitos: PDF
@@ -158,13 +213,30 @@ export default function DocumentsPage() {
               </div>
             </label>
 
-            {selectedFile && (
-              <div className="rounded-xl border border-border-soft bg-bg-surface-strong p-3 flex items-center justify-between gap-3 text-sm animate-slide-up">
-                <span className="truncate font-medium text-primary flex items-center gap-2">
-                  <FileText size={16} className="text-accent" />
-                  {selectedFile.name}
-                </span>
-                <span className="text-muted flex-shrink-0">{formatBytes(selectedFile.size)}</span>
+            {selectedFiles.length > 0 && (
+              <div className="rounded-xl border border-border-soft bg-bg-surface-strong p-3 text-sm animate-slide-up">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <span className="font-medium text-primary">
+                    {selectedFiles.length === 1 ? "Arquivo selecionado" : `${selectedFiles.length} arquivos selecionados`}
+                  </span>
+                  <span className="text-muted flex-shrink-0">
+                    {formatBytes(selectedFiles.reduce((acc, file) => acc + file.size, 0))}
+                  </span>
+                </div>
+                <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                  {selectedFiles.map((file) => (
+                    <div
+                      key={`${file.name}-${file.size}-${file.lastModified}`}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-black/10 px-3 py-2"
+                    >
+                      <span className="truncate font-medium text-primary flex items-center gap-2">
+                        <FileText size={16} className="text-accent" />
+                        {file.name}
+                      </span>
+                      <span className="text-muted flex-shrink-0">{formatBytes(file.size)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -183,12 +255,16 @@ export default function DocumentsPage() {
                 <div className="progress-step-list pt-3">
                   <ProgressStep
                     label="Upload seguro"
-                    description="Transferência local para o workspace"
+                    description={
+                      selectedFiles.length > 1
+                        ? `Transferência em lote de ${selectedFiles.length} PDFs`
+                        : "Transferência local para o workspace"
+                    }
                     state={uploadProgress >= 100 ? "done" : uploadProgress > 0 ? "active" : "idle"}
                   />
                   <ProgressStep
-                    label="Processamento"
-                    description="Leitura e vetorização inteligente"
+                    label="Fila e indexação"
+                    description="Os arquivos continuam sendo processados após o envio"
                     state={isBusy && uploadProgress >= 100 ? "active" : !isBusy && uploadProgress >= 100 ? "done" : "idle"}
                   />
                 </div>
@@ -213,9 +289,9 @@ export default function DocumentsPage() {
               type="submit" 
               className="w-full mt-2" 
               isLoading={isBusy}
-              disabled={!selectedFile}
+              disabled={selectedFiles.length === 0}
             >
-              {isBusy ? "Processando..." : "Enviar Arquivo"}
+              {isBusy ? "Processando..." : selectedFiles.length > 1 ? "Enviar Arquivos" : "Enviar Arquivo"}
             </Button>
           </form>
         </GlassCard>
@@ -235,6 +311,7 @@ export default function DocumentsPage() {
                 <tr>
                   <th className="rounded-tl-lg">Nome do Arquivo</th>
                   <th>Data</th>
+                  <th>Etapa</th>
                   <th>Chunks</th>
                   <th className="rounded-tr-lg">Status</th>
                 </tr>
@@ -242,7 +319,7 @@ export default function DocumentsPage() {
               <tbody>
                 {documents.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-12 border-none">
+                    <td colSpan={5} className="py-12 border-none">
                       <div className="empty-state">
                         <Info size={32} className="text-muted mb-2" />
                         <p className="text-base font-semibold">Acervo vazio</p>
@@ -264,11 +341,29 @@ export default function DocumentsPage() {
                         </div>
                       </td>
                       <td className="text-sm text-secondary">{new Date(doc.uploaded_at).toLocaleDateString()}</td>
+                      <td className="min-w-[14rem]">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="font-semibold uppercase tracking-[0.14em] text-secondary">
+                              {documentStageLabel(doc)}
+                            </span>
+                            <span className="font-mono text-muted">{documentProgressValue(doc)}%</span>
+                          </div>
+                          <div className="progress-track h-2 bg-black/20">
+                            <div className="progress-bar" style={{ width: `${documentProgressValue(doc)}%` }} />
+                          </div>
+                          {doc.processing_error ? (
+                            <p className="text-xs text-danger line-clamp-2">{doc.processing_error}</p>
+                          ) : (
+                            <p className="text-xs text-secondary">{documentStageDescription(doc)}</p>
+                          )}
+                        </div>
+                      </td>
                       <td className="text-sm text-muted font-mono">{doc.chunks_indexed}</td>
                       <td>
                         <StatusChip
-                          label={doc.chunks_indexed > 0 ? "Indexado" : "Processando"}
-                          variant={doc.chunks_indexed > 0 ? "success" : "warning"}
+                          label={documentStatusLabel(doc)}
+                          variant={documentStatusVariant(doc)}
                         />
                       </td>
                     </tr>
@@ -340,4 +435,82 @@ function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isDocumentProcessing(document: DocumentRecord): boolean {
+  return ACTIVE_PROCESSING_STATUSES.has(String(document.processing_status || "").toLowerCase());
+}
+
+function documentProgressValue(document: DocumentRecord): number {
+  const raw = document.processing_progress;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.max(0, Math.min(Math.round(raw), 100));
+  }
+  return isDocumentProcessing(document) ? 0 : 100;
+}
+
+function documentStageLabel(document: DocumentRecord): string {
+  switch (String(document.processing_status || "").toLowerCase()) {
+    case "queued":
+      return "Na fila";
+    case "extracting":
+      return "Extraindo";
+    case "classifying":
+      return "Classificando";
+    case "indexing":
+      return "Indexando";
+    case "failed":
+      return "Falhou";
+    default:
+      return "Pronto";
+  }
+}
+
+function documentStageDescription(document: DocumentRecord): string {
+  switch (String(document.processing_status || "").toLowerCase()) {
+    case "queued":
+      return "Aguardando um worker livre para iniciar a leitura do PDF.";
+    case "extracting":
+      return "Convertendo o PDF em texto pesquisável.";
+    case "classifying":
+      return "Inferindo tipo, domínio, título e pasta de destino.";
+    case "indexing":
+      return "Gerando chunks, embeddings e indexando no acervo.";
+    case "failed":
+      return "O processamento parou antes da indexação final.";
+    default:
+      return document.chunks_indexed > 0
+        ? `${document.chunks_indexed} chunks prontos para busca semântica.`
+        : "Documento disponível no acervo.";
+  }
+}
+
+function documentStatusLabel(document: DocumentRecord): string {
+  switch (String(document.processing_status || "").toLowerCase()) {
+    case "queued":
+      return "Na fila";
+    case "extracting":
+    case "classifying":
+    case "indexing":
+      return "Processando";
+    case "failed":
+      return "Falhou";
+    default:
+      return "Indexado";
+  }
+}
+
+function documentStatusVariant(document: DocumentRecord): "info" | "success" | "warning" | "danger" {
+  switch (String(document.processing_status || "").toLowerCase()) {
+    case "queued":
+      return "info";
+    case "extracting":
+    case "classifying":
+    case "indexing":
+      return "warning";
+    case "failed":
+      return "danger";
+    default:
+      return "success";
+  }
 }

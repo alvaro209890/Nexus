@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { createFolder, DocumentRecord, downloadDocument, FolderRecord, listDocuments, listFolders } from "../lib/api";
+import { createFolder, deleteDocument, DocumentRecord, downloadDocument, FolderRecord, listDocuments, listFolders } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
 import { Dialog } from "../components/ui/Dialog";
@@ -21,7 +21,8 @@ import {
   X,
   MoreVertical,
   Search,
-  File
+  File,
+  Trash2
 } from "lucide-react";
 
 type FolderNode = {
@@ -46,8 +47,10 @@ export default function FilesPage() {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [isFolderDialogOpen, setIsFolderDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [showDetails, setShowDetails] = useState(false);
+  const [deletingDocId, setDeletingDocId] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -138,6 +141,25 @@ export default function FilesPage() {
     }
   }
 
+  async function handleDeleteDocument(document: DocumentRecord) {
+    setDeletingDocId(document.document_id);
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      await deleteDocument(document.document_id, token);
+      setDocuments((current) => current.filter((item) => item.document_id !== document.document_id));
+      if (selectedDocId === document.document_id) {
+        setSelectedDocId(null);
+        setShowDetails(false);
+      }
+      setIsDeleteDialogOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nao foi possivel excluir o arquivo.");
+    } finally {
+      setDeletingDocId("");
+    }
+  }
+
   const folderMap = useMemo(() => buildFolderMap(documents, folders), [documents, folders]);
   const currentNode = folderMap.get(currentPath) ?? folderMap.get("")!;
   
@@ -165,12 +187,6 @@ export default function FilesPage() {
   const selectedDoc = useMemo(() => {
     return documents.find(d => d.document_id === selectedDocId) || null;
   }, [documents, selectedDocId]);
-
-  const formatDocName = (name: string) => {
-    let clean = name.replace(/_/g, ' ').replace(/\.pdf$/i, '');
-    clean = clean.replace(/\b\w/g, l => l.toUpperCase());
-    return clean;
-  };
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
 
@@ -345,7 +361,7 @@ export default function FilesPage() {
                                 <FileText size={20} className={selectedDocId === document.document_id ? "text-accent" : "text-muted group-hover:text-primary"} />
                                 <div className="min-w-0">
                                   <p className="truncate font-medium text-primary group-hover:text-accent-strong transition-colors" title={document.original_name}>
-                                    {formatDocName(document.suggested_name || document.original_name)}
+                                    {formatDisplayFilename(document)}
                                   </p>
                                   {document.classification && (
                                     <p className="text-[0.65rem] text-secondary mt-0.5 inline-block border border-border-soft rounded-md px-1.5 py-0.5 bg-bg-surface">
@@ -368,6 +384,17 @@ export default function FilesPage() {
                                      title="Baixar Arquivo"
                                   >
                                      {downloadingId === document.document_id ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
+                                  </button>
+                                  <button
+                                     className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                                     onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedDocId(document.document_id);
+                                        setIsDeleteDialogOpen(true);
+                                     }}
+                                     title="Excluir Arquivo"
+                                  >
+                                     {deletingDocId === document.document_id ? <RefreshCw size={16} className="animate-spin" /> : <Trash2 size={16} />}
                                   </button>
                                   <button 
                                      className="p-1.5 rounded-lg text-muted hover:text-primary hover:bg-white/10 transition-colors"
@@ -413,7 +440,7 @@ export default function FilesPage() {
                       <div className="w-16 h-16 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 mx-auto text-accent">
                          <File size={32} />
                       </div>
-                      <h3 className="text-center font-bold text-primary mb-1 break-words">{formatDocName(selectedDoc.suggested_name || selectedDoc.original_name)}</h3>
+                      <h3 className="text-center font-bold text-primary mb-1 break-words">{formatDisplayFilename(selectedDoc)}</h3>
                       <p className="text-center text-xs text-secondary break-words">{selectedDoc.original_name}</p>
                    </div>
 
@@ -455,7 +482,7 @@ export default function FilesPage() {
                      </div>
                    )}
 
-                   <div className="pt-4 mt-auto">
+                   <div className="pt-4 mt-auto space-y-3">
                      <Button 
                        className="w-full !rounded-xl"
                        isLoading={downloadingId === selectedDoc.document_id}
@@ -463,6 +490,15 @@ export default function FilesPage() {
                      >
                        <Download size={16} className="mr-2" />
                        Fazer Download
+                     </Button>
+                     <Button
+                       variant="ghost"
+                       className="w-full !rounded-xl !text-danger hover:!bg-danger/10"
+                       isLoading={deletingDocId === selectedDoc.document_id}
+                       onClick={() => setIsDeleteDialogOpen(true)}
+                     >
+                       <Trash2 size={16} className="mr-2" />
+                       Excluir Arquivo
                      </Button>
                    </div>
                  </>
@@ -505,6 +541,43 @@ export default function FilesPage() {
           onChange={(event) => setFolderName(event.target.value)}
           autoFocus
         />
+      </Dialog>
+
+      <Dialog
+        open={isDeleteDialogOpen}
+        title="Excluir arquivo"
+        description="Essa ação remove o PDF, o texto indexado, os vetores do banco e as anotações associadas ao arquivo."
+        onClose={() => {
+          if (deletingDocId) return;
+          setIsDeleteDialogOpen(false);
+        }}
+        footer={
+          <>
+            <Button variant="ghost" type="button" onClick={() => setIsDeleteDialogOpen(false)} disabled={Boolean(deletingDocId)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              isLoading={Boolean(selectedDoc && deletingDocId === selectedDoc.document_id)}
+              onClick={() => selectedDoc && void handleDeleteDocument(selectedDoc)}
+              disabled={!selectedDoc}
+            >
+              Excluir definitivamente
+            </Button>
+          </>
+        }
+      >
+        {selectedDoc ? (
+          <div className="space-y-3 text-sm text-secondary">
+            <p>
+              Arquivo selecionado: <span className="font-semibold text-primary">{formatDisplayFilename(selectedDoc)}</span>
+            </p>
+            <p>Depois da exclusão, o documento deixa de aparecer na busca, no chat e no gerenciador de arquivos.</p>
+          </div>
+        ) : (
+          <p className="text-sm text-secondary">Selecione um arquivo antes de excluir.</p>
+        )}
       </Dialog>
     </div>
   );
@@ -614,6 +687,19 @@ function formatDate(value: string): string {
     month: "2-digit",
     year: "numeric"
   });
+}
+
+function formatDisplayFilename(document: DocumentRecord): string {
+  const originalName = document.original_name || "documento.pdf";
+  const extensionMatch = originalName.match(/(\.[A-Za-z0-9]+)$/);
+  const extension = extensionMatch ? extensionMatch[1].toLowerCase() : "";
+  const stem = extension ? originalName.slice(0, -extension.length) : originalName;
+  const normalizedStem = stem
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return `${normalizedStem}${extension}`;
 }
 
 function FolderTree({

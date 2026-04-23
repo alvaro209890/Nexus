@@ -6,8 +6,10 @@ import multiprocessing
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -81,6 +83,11 @@ embedding_model = None
 chroma_client = None
 chroma_collections: dict[str, Any] = {}
 firebase_request = None
+processing_executor = ThreadPoolExecutor(max_workers=max(2, min(4, (os.cpu_count() or 2))))
+manifest_lock = threading.Lock()
+active_processing_jobs: set[str] = set()
+active_processing_lock = threading.Lock()
+cancelled_processing_jobs: set[str] = set()
 
 
 @dataclass
@@ -93,6 +100,7 @@ class AuthenticatedUserContext:
     profile_path: Path
     originals_dir: Path
     markdown_dir: Path
+    incoming_dir: Path
     manifest_path: Path
     folders_path: Path
     memory_dir: Path
@@ -175,6 +183,11 @@ class DocumentRecord(BaseModel):
     folder_confidence: float | None = None
     title_confidence: float | None = None
     review_status: str | None = None
+    processing_status: str = "ready"
+    processing_progress: int | None = None
+    processing_error: str | None = None
+    processing_started_at: str | None = None
+    processing_completed_at: str | None = None
     pdf_path: str
     markdown_path: str
     chunks_indexed: int
@@ -194,6 +207,7 @@ class AuthenticatedUserProfile(BaseModel):
     profile_path: str
     originals_dir: str
     markdown_dir: str
+    incoming_dir: str | None = None
     manifest_path: str
     folders_path: str
     memory_dir: str
@@ -278,6 +292,51 @@ async def upload_document(
     file: UploadFile = File(...),
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> dict[str, Any]:
+    return process_uploaded_pdf(file=file, current_user=current_user)
+
+
+@app.post("/upload-documents")
+async def upload_documents(
+    files: list[UploadFile] = File(...),
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, Any]:
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one PDF file is required.")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for upload in files:
+        try:
+            results.append(process_uploaded_pdf(file=upload, current_user=current_user))
+        except HTTPException as exc:
+            errors.append(
+                {
+                    "filename": safe_filename(upload.filename or "document.pdf"),
+                    "detail": str(exc.detail),
+                }
+            )
+        except Exception as exc:
+            logger.exception("Unexpected multi-upload failure for file=%s", upload.filename)
+            errors.append(
+                {
+                    "filename": safe_filename(upload.filename or "document.pdf"),
+                    "detail": str(exc),
+                }
+            )
+
+    return {
+        "results": results,
+        "errors": errors,
+        "uploaded_count": len(results),
+        "failed_count": len(errors),
+    }
+
+
+def process_uploaded_pdf(
+    *,
+    file: UploadFile,
+    current_user: AuthenticatedUserContext,
+) -> dict[str, Any]:
     if not is_pdf_upload(file):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
@@ -285,9 +344,7 @@ async def upload_document(
 
     document_id = str(uuid.uuid4())
     original_name = safe_filename(file.filename or "document.pdf")
-    staging_path = current_user.originals_dir / f".upload-{document_id}.pdf"
-    pdf_path: Path | None = None
-    markdown_path: Path | None = None
+    staging_path = current_user.incoming_dir / f"{document_id}__{original_name}"
 
     logger.info(
         "Starting upload for user=%s document_id=%s filename=%s",
@@ -314,92 +371,20 @@ async def upload_document(
             "message": "Document already indexed for this user. Returning existing record.",
         }
 
-    try:
-        markdown_text = extract_pdf_markdown(staging_path)
-        if not markdown_text.strip():
-            raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
+    queued_record = build_queued_document_record(
+        document_id=document_id,
+        file_hash=file_hash,
+        original_name=original_name,
+        staging_path=staging_path,
+    )
+    append_manifest_record(current_user, queued_record)
+    enqueue_document_processing(current_user, document_id)
 
-        ai_result = analyze_document_with_deepseek(markdown_text, original_name)
-        file_plan = build_file_plan(current_user, ai_result, original_name, document_id)
-
-        file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
-        file_plan["markdown_dir"].mkdir(parents=True, exist_ok=True)
-
-        pdf_path = ensure_unique_path(file_plan["pdf_path"])
-        markdown_path = ensure_unique_path(file_plan["markdown_path"])
-        staging_path.replace(pdf_path)
-        markdown_path.write_text(markdown_text, encoding="utf-8")
-
-        chunks = split_text(markdown_text)
-        if not chunks:
-            raise HTTPException(status_code=422, detail="Could not build semantic chunks from this PDF.")
-
-        embeddings = embed_texts(chunks)
-        metadatas = [
-            build_chroma_metadata(
-                current_user=current_user,
-                document_id=document_id,
-                file_hash=file_hash,
-                chunk_index=index,
-                pdf_path=pdf_path,
-                markdown_path=markdown_path,
-                original_name=original_name,
-                suggested_name=file_plan["suggested_name"],
-                year=file_plan["year"],
-                ai_result=ai_result,
-            )
-            for index, _ in enumerate(chunks)
-        ]
-        ids = [f"{document_id}:{index}" for index in range(len(chunks))]
-
-        collection = get_chroma_collection(current_user.collection_name)
-        collection.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
-
-        record = build_document_record(
-            document_id=document_id,
-            file_hash=file_hash,
-            original_name=original_name,
-            ai_result=ai_result,
-            file_plan=file_plan,
-            pdf_path=pdf_path,
-            markdown_path=markdown_path,
-            chunks_indexed=len(chunks),
-        )
-        append_manifest_record(current_user, record)
-
-        logger.info(
-            "Upload indexed successfully for user=%s document_id=%s chunks=%s provider=%s pdf=%s",
-            current_user.uid,
-            document_id,
-            len(chunks),
-            ai_result.get("provider", "heuristic"),
-            pdf_path,
-        )
-
-        return {
-            **record,
-            "duplicate": False,
-            "metadata": ai_result.get("metadata", {}),
-            "classification_provider": ai_result.get("provider", "heuristic"),
-        }
-    except HTTPException:
-        cleanup_failed_upload(staging_path=staging_path, pdf_path=pdf_path, markdown_path=markdown_path)
-        logger.exception(
-            "Upload failed for user=%s document_id=%s filename=%s",
-            current_user.uid,
-            document_id,
-            original_name,
-        )
-        raise
-    except Exception as exc:
-        cleanup_failed_upload(staging_path=staging_path, pdf_path=pdf_path, markdown_path=markdown_path)
-        logger.exception(
-            "Unexpected upload failure for user=%s document_id=%s filename=%s",
-            current_user.uid,
-            document_id,
-            original_name,
-        )
-        raise HTTPException(status_code=500, detail=f"Failed to process PDF upload: {exc}") from exc
+    return {
+        **queued_record,
+        "duplicate": False,
+        "message": "Document queued for background processing.",
+    }
 
 
 @app.get("/documents", response_model=list[DocumentRecord])
@@ -478,6 +463,30 @@ async def download_document(
 
     download_name = safe_filename(str(record.get("original_name") or pdf_path.name))
     return FileResponse(path=pdf_path, filename=download_name, media_type="application/pdf")
+
+
+@app.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, str]:
+    clean_document_id = document_id.strip()
+    if not clean_document_id:
+        raise HTTPException(status_code=400, detail="Document id is required.")
+
+    record = find_document_by_id(current_user, clean_document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    mark_document_job_cancelled(current_user.uid, clean_document_id)
+    remove_document_from_vector_store(current_user, clean_document_id)
+    prune_document_annotations(current_user, clean_document_id)
+    delete_document_files(current_user, record)
+
+    if not remove_manifest_record(current_user, clean_document_id):
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    return {"document_id": clean_document_id, "status": "deleted"}
 
 
 @app.get("/search-semantic", response_model=list[SearchResult])
@@ -738,6 +747,7 @@ def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContex
         profile_path=user_dir / "profile.json",
         originals_dir=user_dir / "originals",
         markdown_dir=user_dir / "markdown",
+        incoming_dir=user_dir / "incoming",
         manifest_path=user_dir / "manifest.jsonl",
         folders_path=user_dir / "folders.json",
         memory_dir=user_dir / "memory",
@@ -750,6 +760,7 @@ def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
         current_user.user_dir,
         current_user.originals_dir,
         current_user.markdown_dir,
+        current_user.incoming_dir,
         current_user.memory_dir,
         chat_sessions_data_dir(current_user),
     ):
@@ -784,6 +795,7 @@ def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any
         "profile_path": str(current_user.profile_path),
         "originals_dir": str(current_user.originals_dir),
         "markdown_dir": str(current_user.markdown_dir),
+        "incoming_dir": str(current_user.incoming_dir),
         "manifest_path": str(current_user.manifest_path),
         "folders_path": str(current_user.folders_path),
         "memory_dir": str(current_user.memory_dir),
@@ -1382,6 +1394,51 @@ def ensure_unique_path(path: Path) -> Path:
     raise HTTPException(status_code=500, detail=f"Could not create unique path for {path.name}.")
 
 
+def build_queued_document_record(
+    *,
+    document_id: str,
+    file_hash: str,
+    original_name: str,
+    staging_path: Path,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    title = Path(original_name).stem
+    return {
+        "document_id": document_id,
+        "sha256": file_hash,
+        "original_name": original_name,
+        "classification": "outro",
+        "document_type": "outro",
+        "domain": "geral",
+        "suggested_name": original_name,
+        "title": title,
+        "author": None,
+        "date": None,
+        "year": "sem-data",
+        "technologies": [],
+        "summary": "",
+        "folder_path": "",
+        "tags": [],
+        "aliases": dedupe_text_list([original_name, title], limit=6),
+        "entities": [],
+        "project": None,
+        "classification_confidence": None,
+        "folder_confidence": None,
+        "title_confidence": None,
+        "review_status": "pending",
+        "processing_status": "queued",
+        "processing_progress": 0,
+        "processing_error": None,
+        "processing_started_at": None,
+        "processing_completed_at": None,
+        "pdf_path": str(staging_path),
+        "markdown_path": "",
+        "chunks_indexed": 0,
+        "uploaded_at": now,
+        "size_bytes": staging_path.stat().st_size if staging_path.exists() else None,
+    }
+
+
 def build_document_record(
     document_id: str,
     file_hash: str,
@@ -1419,6 +1476,11 @@ def build_document_record(
         "folder_confidence": ai_result.get("folder_confidence"),
         "title_confidence": ai_result.get("title_confidence"),
         "review_status": str(ai_result.get("review_status") or "auto_ok"),
+        "processing_status": "ready",
+        "processing_progress": 100,
+        "processing_error": None,
+        "processing_started_at": None,
+        "processing_completed_at": datetime.now(UTC).isoformat(),
         "folder_path": file_plan["folder_path"],
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
@@ -1428,26 +1490,355 @@ def build_document_record(
     }
 
 
+def enqueue_document_processing(current_user: AuthenticatedUserContext, document_id: str) -> None:
+    job_key = f"{current_user.uid}:{document_id}"
+    with active_processing_lock:
+        if job_key in active_processing_jobs:
+            return
+        active_processing_jobs.add(job_key)
+    processing_executor.submit(run_document_processing_job, current_user, document_id, job_key)
+
+
+def processing_job_key(uid: str, document_id: str) -> str:
+    return f"{uid}:{document_id}"
+
+
+def mark_document_job_cancelled(uid: str, document_id: str) -> None:
+    with active_processing_lock:
+        cancelled_processing_jobs.add(processing_job_key(uid, document_id))
+
+
+def clear_document_job_cancelled(uid: str, document_id: str) -> None:
+    with active_processing_lock:
+        cancelled_processing_jobs.discard(processing_job_key(uid, document_id))
+
+
+def is_document_job_cancelled(uid: str, document_id: str) -> bool:
+    with active_processing_lock:
+        return processing_job_key(uid, document_id) in cancelled_processing_jobs
+
+
+def ensure_document_job_not_cancelled(uid: str, document_id: str) -> None:
+    if is_document_job_cancelled(uid, document_id):
+        raise RuntimeError(f"Document {document_id} was deleted during processing.")
+
+
+def run_document_processing_job(
+    current_user: AuthenticatedUserContext,
+    document_id: str,
+    job_key: str,
+) -> None:
+    try:
+        process_document_job(current_user, document_id)
+    except Exception as exc:
+        logger.exception("Background document processing failed for %s", document_id)
+        update_manifest_record(
+            current_user,
+            document_id,
+            {
+                "processing_status": "failed",
+                "processing_error": str(exc),
+                "processing_completed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    finally:
+        with active_processing_lock:
+            active_processing_jobs.discard(job_key)
+            cancelled_processing_jobs.discard(job_key)
+
+
+def process_document_job(current_user: AuthenticatedUserContext, document_id: str) -> None:
+    ensure_user_storage(current_user)
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+    record = find_document_by_id(current_user, document_id)
+    if record is None:
+        raise RuntimeError(f"Queued document {document_id} no longer exists in the manifest.")
+
+    source_pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
+    if not source_pdf_path.exists() or not source_pdf_path.is_file():
+        raise RuntimeError(f"Queued document source is missing: {source_pdf_path}")
+
+    started_at = str(record.get("processing_started_at") or datetime.now(UTC).isoformat())
+    base_updates = {
+        "processing_error": None,
+        "processing_started_at": started_at,
+        "processing_completed_at": None,
+    }
+    update_manifest_record(
+        current_user,
+        document_id,
+        {
+            **base_updates,
+            "processing_status": "extracting",
+            "processing_progress": 15,
+        },
+    )
+
+    original_name = safe_filename(str(record.get("original_name") or source_pdf_path.name))
+    file_hash = str(record.get("sha256") or "")
+    markdown_text = extract_pdf_markdown(source_pdf_path)
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+    if not markdown_text.strip():
+        raise RuntimeError("The uploaded PDF did not produce readable text.")
+
+    update_manifest_record(
+        current_user,
+        document_id,
+        {
+            "processing_status": "classifying",
+            "processing_progress": 45,
+        },
+    )
+
+    try:
+        ai_result = analyze_document_with_groq(markdown_text, original_name)
+    except Exception as exc:
+        logger.warning("AI classification fallback for document_id=%s: %s", document_id, exc)
+        ai_result = fallback_document_analysis(markdown_text, original_name)
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+
+    file_plan = build_file_plan(
+        current_user=current_user,
+        ai_result=ai_result,
+        original_name=original_name,
+        document_id=document_id,
+    )
+    pdf_path = ensure_unique_path(file_plan["pdf_path"])
+    markdown_path = ensure_unique_path(file_plan["markdown_path"])
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+
+    update_manifest_record(
+        current_user,
+        document_id,
+        {
+            "classification": file_plan["classification"],
+            "document_type": file_plan["document_type"],
+            "domain": file_plan["domain"],
+            "suggested_name": file_plan["suggested_name"],
+            "title": file_plan["title"],
+            "folder_path": file_plan["folder_path"],
+            "year": file_plan["year"],
+            "project": file_plan["project"],
+            "processing_status": "indexing",
+            "processing_progress": 72,
+        },
+    )
+
+    shutil.move(str(source_pdf_path), str(pdf_path))
+    markdown_path.write_text(markdown_text, encoding="utf-8")
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+
+    chunks = split_text(markdown_text)
+    if not chunks:
+        raise RuntimeError("The document could not be split into searchable chunks.")
+
+    embeddings = embed_texts(chunks)
+    collection = get_chroma_collection(current_user.collection_name)
+    chunk_ids = [f"{document_id}:{index}" for index in range(len(chunks))]
+    metadatas = [
+        build_chroma_metadata(
+            current_user=current_user,
+            document_id=document_id,
+            file_hash=file_hash,
+            chunk_index=index,
+            pdf_path=pdf_path,
+            markdown_path=markdown_path,
+            original_name=original_name,
+            suggested_name=file_plan["suggested_name"],
+            year=file_plan["year"],
+            ai_result=ai_result,
+        )
+        for index in range(len(chunks))
+    ]
+
+    try:
+        collection.delete(where={"document_id": document_id})
+    except Exception:
+        logger.debug("Chroma cleanup skipped for document_id=%s", document_id)
+
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+    collection.upsert(
+        ids=chunk_ids,
+        documents=chunks,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
+    ensure_document_job_not_cancelled(current_user.uid, document_id)
+
+    final_record = build_document_record(
+        document_id=document_id,
+        file_hash=file_hash,
+        original_name=original_name,
+        ai_result=ai_result,
+        file_plan=file_plan,
+        pdf_path=pdf_path,
+        markdown_path=markdown_path,
+        chunks_indexed=len(chunks),
+    )
+    final_record["uploaded_at"] = str(record.get("uploaded_at") or final_record["uploaded_at"])
+    final_record["processing_started_at"] = started_at
+    final_record["processing_completed_at"] = datetime.now(UTC).isoformat()
+    final_record["processing_progress"] = 100
+    final_record["processing_status"] = "ready"
+    final_record["processing_error"] = None
+
+    update_manifest_record(current_user, document_id, final_record)
+
+
+def list_recoverable_document_jobs() -> list[tuple[AuthenticatedUserContext, str]]:
+    jobs: list[tuple[AuthenticatedUserContext, str]] = []
+    if not USERS_DIR.exists():
+        return jobs
+
+    for user_dir in USERS_DIR.iterdir():
+        if not user_dir.is_dir():
+            continue
+        current_user = build_user_context_from_storage(user_dir)
+        if current_user is None:
+            continue
+
+        for record in read_manifest_records(current_user):
+            hydrated = hydrate_document_record(record)
+            status = str(hydrated.get("processing_status") or "ready")
+            document_id = str(hydrated.get("document_id") or "").strip()
+            if not document_id or status not in {"queued", "extracting", "classifying", "indexing"}:
+                continue
+            jobs.append((current_user, document_id))
+
+    return jobs
+
+
+def build_user_context_from_storage(user_dir: Path) -> AuthenticatedUserContext | None:
+    profile_path = user_dir / "profile.json"
+    payload = read_json_object(profile_path) or {}
+    uid = str(payload.get("uid") or user_dir.name).strip()
+    if not uid:
+        return None
+
+    provider_ids = payload.get("provider_ids")
+    return AuthenticatedUserContext(
+        uid=uid,
+        email=str(payload.get("email")).strip() if payload.get("email") else None,
+        display_name=str(payload.get("display_name")).strip() if payload.get("display_name") else None,
+        provider_ids=[str(item).strip() for item in provider_ids] if isinstance(provider_ids, list) else [],
+        user_dir=user_dir,
+        profile_path=profile_path,
+        originals_dir=Path(str(payload.get("originals_dir") or user_dir / "originals")),
+        markdown_dir=Path(str(payload.get("markdown_dir") or user_dir / "markdown")),
+        incoming_dir=Path(str(payload.get("incoming_dir") or user_dir / "incoming")),
+        manifest_path=Path(str(payload.get("manifest_path") or user_dir / "manifest.jsonl")),
+        folders_path=Path(str(payload.get("folders_path") or user_dir / "folders.json")),
+        memory_dir=Path(str(payload.get("memory_dir") or user_dir / "memory")),
+        collection_name=str(payload.get("collection_name") or collection_name_for_user(uid)),
+    )
+
+
+@app.on_event("startup")
+def resume_document_processing_jobs() -> None:
+    for current_user, document_id in list_recoverable_document_jobs():
+        update_manifest_record(
+            current_user,
+            document_id,
+            {
+                "processing_status": "queued",
+                "processing_progress": 0,
+                "processing_error": None,
+                "processing_completed_at": None,
+            },
+        )
+        enqueue_document_processing(current_user, document_id)
+
+
 def append_manifest_record(current_user: AuthenticatedUserContext, record: dict[str, Any]) -> None:
     ensure_user_storage(current_user)
-    with current_user.manifest_path.open("a", encoding="utf-8") as output:
-        output.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with manifest_lock:
+        with current_user.manifest_path.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def read_manifest_records(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
     if not current_user.manifest_path.exists():
         return []
     records: list[dict[str, Any]] = []
-    with current_user.manifest_path.open("r", encoding="utf-8") as input_file:
-        for line in input_file:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    with manifest_lock:
+        with current_user.manifest_path.open("r", encoding="utf-8") as input_file:
+            for line in input_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     return records
+
+
+def write_manifest_records(current_user: AuthenticatedUserContext, records: list[dict[str, Any]]) -> None:
+    ensure_user_storage(current_user)
+    payload = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+    with manifest_lock:
+        current_user.manifest_path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
+
+
+def update_manifest_record(
+    current_user: AuthenticatedUserContext,
+    document_id: str,
+    updates: dict[str, Any],
+) -> dict[str, Any] | None:
+    ensure_user_storage(current_user)
+    updated_record: dict[str, Any] | None = None
+    with manifest_lock:
+        records: list[dict[str, Any]] = []
+        with current_user.manifest_path.open("r", encoding="utf-8") as input_file:
+            for line in input_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        for index, record in enumerate(records):
+            if str(record.get("document_id") or "").strip() != document_id:
+                continue
+            merged = dict(record)
+            merged.update(updates)
+            records[index] = merged
+            updated_record = merged
+            break
+
+        if updated_record is None:
+            return None
+
+        payload = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+        current_user.manifest_path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
+    return updated_record
+
+
+def remove_manifest_record(current_user: AuthenticatedUserContext, document_id: str) -> bool:
+    ensure_user_storage(current_user)
+    removed = False
+    with manifest_lock:
+        records: list[dict[str, Any]] = []
+        with current_user.manifest_path.open("r", encoding="utf-8") as input_file:
+            for line in input_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if str(payload.get("document_id") or "").strip() == document_id:
+                    removed = True
+                    continue
+                records.append(payload)
+
+        serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+        current_user.manifest_path.write_text(f"{serialized}\n" if serialized else "", encoding="utf-8")
+    return removed
 
 
 def read_folder_records(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
@@ -1552,6 +1943,29 @@ def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
             title_confidence=float(hydrated["title_confidence"]),
         )
     )
+    raw_status = str(hydrated.get("processing_status") or "").strip().lower()
+    if raw_status not in {"queued", "extracting", "classifying", "indexing", "ready", "failed"}:
+        raw_status = "ready" if int(hydrated.get("chunks_indexed") or 0) > 0 else "queued"
+    hydrated["processing_status"] = raw_status
+    progress = hydrated.get("processing_progress")
+    if progress is None:
+        default_progress = {
+            "queued": 0,
+            "extracting": 15,
+            "classifying": 45,
+            "indexing": 72,
+            "ready": 100,
+            "failed": 100,
+        }
+        hydrated["processing_progress"] = default_progress[raw_status]
+    else:
+        try:
+            hydrated["processing_progress"] = max(0, min(int(progress), 100))
+        except (TypeError, ValueError):
+            hydrated["processing_progress"] = 0 if raw_status != "ready" else 100
+    hydrated["processing_error"] = str(hydrated.get("processing_error") or "").strip() or None
+    hydrated["processing_started_at"] = str(hydrated.get("processing_started_at") or "").strip() or None
+    hydrated["processing_completed_at"] = str(hydrated.get("processing_completed_at") or "").strip() or None
     if hydrated.get("size_bytes") is None:
         pdf_path_value = str(hydrated.get("pdf_path") or "").strip()
         if pdf_path_value:
@@ -1576,6 +1990,105 @@ def find_document_by_id(current_user: AuthenticatedUserContext, document_id: str
         if str(record.get("document_id") or "").strip() == clean_id:
             return hydrate_document_record(record)
     return None
+
+
+def remove_document_from_vector_store(current_user: AuthenticatedUserContext, document_id: str) -> None:
+    try:
+        collection = get_chroma_collection(current_user.collection_name)
+        collection.delete(where={"document_id": document_id})
+    except Exception as exc:
+        logger.warning("Failed to remove document vectors for %s: %s", document_id, exc)
+
+
+def path_is_within(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def cleanup_empty_parents(path: Path, stop_dir: Path) -> None:
+    current = path.parent
+    stop_resolved = stop_dir.resolve()
+    while current.exists():
+        try:
+            current_resolved = current.resolve()
+        except OSError:
+            break
+        if current_resolved == stop_resolved:
+            break
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def delete_document_files(current_user: AuthenticatedUserContext, record: dict[str, Any]) -> None:
+    candidate_roots = [
+        current_user.originals_dir,
+        current_user.markdown_dir,
+        current_user.incoming_dir,
+    ]
+    for field_name in ("pdf_path", "markdown_path"):
+        raw_path = str(record.get(field_name) or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path).expanduser()
+        matched_root = next((root for root in candidate_roots if path_is_within(path, root)), None)
+        if matched_root is None:
+            continue
+        path.unlink(missing_ok=True)
+        cleanup_empty_parents(path, matched_root)
+
+
+def prune_document_annotations(current_user: AuthenticatedUserContext, document_id: str) -> None:
+    candidate_dirs = [chat_sessions_data_dir(current_user), current_user.memory_dir]
+    seen_paths: set[Path] = set()
+    for base_dir in candidate_dirs:
+        if not base_dir.exists():
+            continue
+        for path in base_dir.glob("*.jsonl"):
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            rewrite_chat_annotations_for_document(path, document_id)
+
+
+def rewrite_chat_annotations_for_document(path: Path, document_id: str) -> None:
+    updated_lines: list[str] = []
+    changed = False
+    with path.open("r", encoding="utf-8") as input_file:
+        for raw_line in input_file:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                updated_lines.append(raw_line.rstrip("\n"))
+                continue
+
+            references = payload.get("references")
+            if isinstance(references, list):
+                filtered = [
+                    item for item in references
+                    if not (isinstance(item, dict) and str(item.get("document_id") or "").strip() == document_id)
+                ]
+                if len(filtered) != len(references):
+                    payload["references"] = filtered
+                    changed = True
+
+            focus_document = payload.get("focus_document")
+            if isinstance(focus_document, dict) and str(focus_document.get("document_id") or "").strip() == document_id:
+                payload["focus_document"] = None
+                changed = True
+
+            updated_lines.append(json.dumps(payload, ensure_ascii=False))
+
+    if changed:
+        path.write_text("\n".join(updated_lines) + ("\n" if updated_lines else ""), encoding="utf-8")
 
 
 def fallback_document_analysis(markdown_text: str, original_name: str) -> dict[str, Any]:
