@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import multiprocessing
 import os
 import re
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +21,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 load_dotenv()
+
+logging.basicConfig(level=os.getenv("NEXUS_LOG_LEVEL", "INFO"))
+logger = logging.getLogger("nexus.backend")
 
 app = FastAPI(title="Nexus API", version="0.3.0")
 
@@ -45,6 +51,7 @@ MAX_DEEPSEEK_CHARS = int(os.getenv("MAX_DEEPSEEK_CHARS", "18000"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
 CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
+PDF_EXTRACT_TIMEOUT_SECONDS = int(os.getenv("PDF_EXTRACT_TIMEOUT_SECONDS", "180"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -226,79 +233,120 @@ async def upload_document(
     document_id = str(uuid.uuid4())
     original_name = safe_filename(file.filename or "document.pdf")
     staging_path = current_user.originals_dir / f".upload-{document_id}.pdf"
+    pdf_path: Path | None = None
+    markdown_path: Path | None = None
+
+    logger.info(
+        "Starting upload for user=%s document_id=%s filename=%s",
+        current_user.uid,
+        document_id,
+        original_name,
+    )
+
     save_upload(file, staging_path)
     file_hash = hash_file(staging_path)
 
     existing_record = find_document_by_hash(current_user, file_hash)
     if existing_record is not None:
         staging_path.unlink(missing_ok=True)
+        logger.info(
+            "Duplicate upload skipped for user=%s document_id=%s sha256=%s",
+            current_user.uid,
+            document_id,
+            file_hash,
+        )
         return {
             **existing_record,
             "duplicate": True,
             "message": "Document already indexed for this user. Returning existing record.",
         }
 
-    markdown_text = extract_pdf_markdown(staging_path)
-    if not markdown_text.strip():
-        staging_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
+    try:
+        markdown_text = extract_pdf_markdown(staging_path)
+        if not markdown_text.strip():
+            raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
 
-    ai_result = analyze_document_with_deepseek(markdown_text, original_name)
-    file_plan = build_file_plan(current_user, ai_result, original_name, document_id)
+        ai_result = analyze_document_with_deepseek(markdown_text, original_name)
+        file_plan = build_file_plan(current_user, ai_result, original_name, document_id)
 
-    file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
-    file_plan["markdown_dir"].mkdir(parents=True, exist_ok=True)
+        file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
+        file_plan["markdown_dir"].mkdir(parents=True, exist_ok=True)
 
-    pdf_path = ensure_unique_path(file_plan["pdf_path"])
-    markdown_path = ensure_unique_path(file_plan["markdown_path"])
-    staging_path.replace(pdf_path)
-    markdown_path.write_text(markdown_text, encoding="utf-8")
+        pdf_path = ensure_unique_path(file_plan["pdf_path"])
+        markdown_path = ensure_unique_path(file_plan["markdown_path"])
+        staging_path.replace(pdf_path)
+        markdown_path.write_text(markdown_text, encoding="utf-8")
 
-    chunks = split_text(markdown_text)
-    if not chunks:
-        pdf_path.unlink(missing_ok=True)
-        markdown_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail="Could not build semantic chunks from this PDF.")
+        chunks = split_text(markdown_text)
+        if not chunks:
+            raise HTTPException(status_code=422, detail="Could not build semantic chunks from this PDF.")
 
-    embeddings = embed_texts(chunks)
-    metadatas = [
-        build_chroma_metadata(
-            current_user=current_user,
+        embeddings = embed_texts(chunks)
+        metadatas = [
+            build_chroma_metadata(
+                current_user=current_user,
+                document_id=document_id,
+                file_hash=file_hash,
+                chunk_index=index,
+                pdf_path=pdf_path,
+                markdown_path=markdown_path,
+                original_name=original_name,
+                suggested_name=file_plan["suggested_name"],
+                year=file_plan["year"],
+                ai_result=ai_result,
+            )
+            for index, _ in enumerate(chunks)
+        ]
+        ids = [f"{document_id}:{index}" for index in range(len(chunks))]
+
+        collection = get_chroma_collection(current_user.collection_name)
+        collection.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
+
+        record = build_document_record(
             document_id=document_id,
             file_hash=file_hash,
-            chunk_index=index,
+            original_name=original_name,
+            ai_result=ai_result,
+            file_plan=file_plan,
             pdf_path=pdf_path,
             markdown_path=markdown_path,
-            original_name=original_name,
-            suggested_name=file_plan["suggested_name"],
-            year=file_plan["year"],
-            ai_result=ai_result,
+            chunks_indexed=len(chunks),
         )
-        for index, _ in enumerate(chunks)
-    ]
-    ids = [f"{document_id}:{index}" for index in range(len(chunks))]
+        append_manifest_record(current_user, record)
 
-    collection = get_chroma_collection(current_user.collection_name)
-    collection.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
+        logger.info(
+            "Upload indexed successfully for user=%s document_id=%s chunks=%s provider=%s pdf=%s",
+            current_user.uid,
+            document_id,
+            len(chunks),
+            ai_result.get("provider", "heuristic"),
+            pdf_path,
+        )
 
-    record = build_document_record(
-        document_id=document_id,
-        file_hash=file_hash,
-        original_name=original_name,
-        ai_result=ai_result,
-        file_plan=file_plan,
-        pdf_path=pdf_path,
-        markdown_path=markdown_path,
-        chunks_indexed=len(chunks),
-    )
-    append_manifest_record(current_user, record)
-
-    return {
-        **record,
-        "duplicate": False,
-        "metadata": ai_result.get("metadata", {}),
-        "classification_provider": ai_result.get("provider", "heuristic"),
-    }
+        return {
+            **record,
+            "duplicate": False,
+            "metadata": ai_result.get("metadata", {}),
+            "classification_provider": ai_result.get("provider", "heuristic"),
+        }
+    except HTTPException:
+        cleanup_failed_upload(staging_path=staging_path, pdf_path=pdf_path, markdown_path=markdown_path)
+        logger.exception(
+            "Upload failed for user=%s document_id=%s filename=%s",
+            current_user.uid,
+            document_id,
+            original_name,
+        )
+        raise
+    except Exception as exc:
+        cleanup_failed_upload(staging_path=staging_path, pdf_path=pdf_path, markdown_path=markdown_path)
+        logger.exception(
+            "Unexpected upload failure for user=%s document_id=%s filename=%s",
+            current_user.uid,
+            document_id,
+            original_name,
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF upload: {exc}") from exc
 
 
 @app.get("/documents", response_model=list[DocumentRecord])
@@ -598,16 +646,102 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
 
 
 def extract_pdf_markdown(pdf_path: Path) -> str:
+    started_at = time.perf_counter()
+    try:
+        markdown_text = extract_pdf_markdown_with_docling(pdf_path)
+        if markdown_text.strip():
+            logger.info(
+                "PDF extracted with docling in %.2fs for %s",
+                time.perf_counter() - started_at,
+                pdf_path.name,
+            )
+            return markdown_text
+        logger.warning("Docling returned empty markdown for %s, trying pypdf fallback", pdf_path.name)
+    except Exception as exc:
+        logger.warning("Docling extraction failed for %s: %s", pdf_path.name, exc)
+
+    markdown_text = extract_pdf_markdown_with_pypdf(pdf_path)
+    if markdown_text.strip():
+        logger.info(
+            "PDF extracted with pypdf fallback in %.2fs for %s",
+            time.perf_counter() - started_at,
+            pdf_path.name,
+        )
+        return markdown_text
+
+    raise HTTPException(status_code=422, detail="Could not extract readable text from PDF.")
+
+
+def extract_pdf_markdown_with_docling(pdf_path: Path) -> str:
+    ctx = multiprocessing.get_context("spawn")
+    queue: multiprocessing.Queue[dict[str, str]] = ctx.Queue()
+    process = ctx.Process(target=docling_extract_worker, args=(str(pdf_path), queue))
+    process.start()
+    process.join(PDF_EXTRACT_TIMEOUT_SECONDS)
+
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        raise RuntimeError(f"Docling extraction timed out after {PDF_EXTRACT_TIMEOUT_SECONDS}s.")
+
+    payload: dict[str, str] | None = None
+    if not queue.empty():
+        payload = queue.get()
+    queue.close()
+    queue.join_thread()
+
+    if process.exitcode not in (0, None):
+        if payload and payload.get("error"):
+            raise RuntimeError(payload["error"])
+        raise RuntimeError(f"Docling extraction exited with code {process.exitcode}.")
+
+    if not payload:
+        raise RuntimeError("Docling extraction returned no data.")
+    if payload.get("error"):
+        raise RuntimeError(payload["error"])
+
+    return payload.get("markdown", "")
+
+
+def docling_extract_worker(pdf_path: str, queue: multiprocessing.Queue[dict[str, str]]) -> None:
     try:
         from docling.document_converter import DocumentConverter
+
+        result = DocumentConverter().convert(pdf_path)
+        queue.put({"markdown": result.document.export_to_markdown()})
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=f"Docling is not available: {exc}") from exc
+        queue.put({"error": str(exc)})
+
+
+def extract_pdf_markdown_with_pypdf(pdf_path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"PyPDF fallback is not available: {exc}") from exc
 
     try:
-        result = DocumentConverter().convert(str(pdf_path))
-        return result.document.export_to_markdown()
+        reader = PdfReader(str(pdf_path))
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"PyPDF fallback failed: {exc}") from exc
+
+    content = "\n\n".join(page for page in pages if page)
+    return content.strip()
+
+
+def cleanup_failed_upload(
+    *,
+    staging_path: Path | None,
+    pdf_path: Path | None,
+    markdown_path: Path | None,
+) -> None:
+    for path in (staging_path, pdf_path, markdown_path):
+        if path is None:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Failed to cleanup path after upload error: %s", path, exc_info=True)
 
 
 def ensure_groq_configured() -> None:
