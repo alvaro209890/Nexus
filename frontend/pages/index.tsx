@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import { onAuthStateChanged, signOut, type User } from "firebase/auth";
+import { onIdTokenChanged, signOut, type User } from "firebase/auth";
 import { firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
 import {
+  AuthenticatedUserProfile,
   ChatTurn,
   DocumentRecord,
   SearchResult,
@@ -10,6 +11,7 @@ import {
   listDocuments,
   searchSemantic,
   sendChatMessage,
+  syncAuthenticatedUser,
   uploadDocument
 } from "../lib/api";
 
@@ -25,7 +27,9 @@ const quickPrompts = [
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [authProfile, setAuthProfile] = useState<AuthenticatedUserProfile | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [authSyncing, setAuthSyncing] = useState(true);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -42,32 +46,51 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!firebaseAuth) {
       setAuthChecked(true);
+      setAuthSyncing(false);
       return;
     }
 
-    return onAuthStateChanged(firebaseAuth, (currentUser) => {
-      setUser(currentUser);
+    return onIdTokenChanged(firebaseAuth, (currentUser) => {
       setAuthChecked(true);
-      if (!currentUser) void router.replace("/login");
+
+      if (!currentUser) {
+        setUser(null);
+        setAuthProfile(null);
+        setAuthSyncing(false);
+        setDocuments([]);
+        setChatHistory([]);
+        setChatReferences([]);
+        void router.replace("/login");
+        return;
+      }
+
+      setUser(currentUser);
+      setAuthSyncing(true);
+      void syncUserContext(currentUser);
     });
   }, [router]);
 
   useEffect(() => {
-    const savedSession = window.localStorage.getItem("nexus_session_id");
+    if (!user) return;
+
+    const storageKey = `nexus_session_id:${user.uid}`;
+    const savedSession = window.localStorage.getItem(storageKey);
     if (savedSession) {
       setSessionId(savedSession);
       return;
     }
 
-    const nextSession = `nexus-${crypto.randomUUID()}`;
-    window.localStorage.setItem("nexus_session_id", nextSession);
+    const nextSession = `nexus-${user.uid}-${crypto.randomUUID()}`;
+    window.localStorage.setItem(storageKey, nextSession);
     setSessionId(nextSession);
-  }, []);
+    setChatHistory([]);
+    setChatReferences([]);
+  }, [user]);
 
   useEffect(() => {
-    if (!user) return;
-    void refreshDocuments();
-  }, [user]);
+    if (!user || !authProfile) return;
+    void refreshDocuments(user);
+  }, [authProfile, user]);
 
   const displayName = useMemo(() => {
     return user?.displayName || user?.email || "Operador Nexus";
@@ -75,6 +98,28 @@ export default function DashboardPage() {
 
   const indexedChunks = documents.reduce((total, document) => total + document.chunks_indexed, 0);
   const lastClassification = uploadResult?.classification || documents[0]?.classification || "aguardando";
+
+  async function syncUserContext(currentUser: User) {
+    try {
+      const token = await currentUser.getIdToken();
+      const profile = await syncAuthenticatedUser(token);
+      setAuthProfile(profile);
+      setError("");
+    } catch (err) {
+      setAuthProfile(null);
+      setError(err instanceof Error ? err.message : "Falha ao sincronizar o usuario.");
+    } finally {
+      setAuthSyncing(false);
+    }
+  }
+
+  async function getCurrentToken(): Promise<string> {
+    const currentUser = firebaseAuth?.currentUser;
+    if (!currentUser) {
+      throw new Error("Sessao expirada. Entre novamente.");
+    }
+    return currentUser.getIdToken();
+  }
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -84,7 +129,7 @@ export default function DashboardPage() {
     setError("");
     setUploadStatus("Extraindo texto, classificando e indexando o PDF...");
     try {
-      const result = await uploadDocument(selectedFile);
+      const result = await uploadDocument(selectedFile, await getCurrentToken());
       setUploadResult(result);
       setUploadStatus(
         result.duplicate
@@ -107,7 +152,7 @@ export default function DashboardPage() {
     setBusy("search");
     setError("");
     try {
-      setSearchResults(await searchSemantic(query.trim()));
+      setSearchResults(await searchSemantic(query.trim(), await getCurrentToken()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha na busca.");
     } finally {
@@ -128,7 +173,12 @@ export default function DashboardPage() {
     setBusy("chat");
     setError("");
     try {
-      const result = await sendChatMessage(cleanMessage, chatHistory, sessionId);
+      const result = await sendChatMessage(
+        cleanMessage,
+        chatHistory,
+        sessionId,
+        await getCurrentToken()
+      );
       setChatHistory([
         ...nextHistory,
         { role: "assistant", content: result.answer }
@@ -151,21 +201,23 @@ export default function DashboardPage() {
     await router.replace("/login");
   }
 
-  async function refreshDocuments() {
+  async function refreshDocuments(currentUser?: User | null) {
+    if (!currentUser) return;
     try {
-      setDocuments(await listDocuments());
+      const token = await currentUser.getIdToken();
+      setDocuments(await listDocuments(token));
     } catch (err) {
       console.warn("Could not load documents", err);
     }
   }
 
-  if (!authChecked) {
+  if (!authChecked || authSyncing) {
     return (
       <main className="grid min-h-screen place-items-center px-6">
         <div className="glass-panel rounded-[2rem] p-8 text-center">
           <div className="mx-auto mb-5 h-12 w-12 animate-pulse rounded-2xl bg-amberline" />
           <p className="font-display text-2xl font-bold">Carregando Nexus</p>
-          <p className="mt-2 text-sm text-slateblue">Preparando a central documental.</p>
+          <p className="mt-2 text-sm text-slateblue">Sincronizando sua area privada.</p>
         </div>
       </main>
     );
@@ -186,6 +238,36 @@ export default function DashboardPage() {
   }
 
   if (!user) return null;
+
+  if (!authProfile) {
+    return (
+      <main className="min-h-screen p-8">
+        <div className="glass-panel mx-auto max-w-2xl rounded-[2rem] p-8">
+          <p className="eyebrow">Acesso</p>
+          <h1 className="mt-3 font-display text-4xl font-bold">Nao foi possivel sincronizar seu usuario</h1>
+          <p className="mt-4 text-slateblue">
+            O Nexus exige sincronizacao do usuario autenticado antes de liberar documentos,
+            memoria e busca vetorial.
+          </p>
+          {error && (
+            <p className="mt-4 rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">
+              {error}
+            </p>
+          )}
+          <button
+            className="primary-button mt-6"
+            type="button"
+            onClick={() => {
+              setAuthSyncing(true);
+              void syncUserContext(user);
+            }}
+          >
+            Tentar novamente
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen px-4 py-5 md:px-7">
@@ -257,7 +339,7 @@ export default function DashboardPage() {
                   <span className="status-chip">PDF</span>
                 </div>
                 <p className="mt-3 text-sm text-slateblue">
-                  O arquivo original fica em `~/Downloads/BD_NEXUS`, com Markdown e vetores associados ao mesmo documento.
+                  {`Cada upload entra apenas na sua area privada em ${authProfile.user_root}. Markdown, manifesto, memoria e vetores ficam isolados dos demais usuarios.`}
                 </p>
 
                 <label className="drop-zone mt-6">

@@ -3,14 +3,10 @@ import { useRouter } from "next/router";
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
-  signInWithEmailAndPassword,
-  signInWithPopup
+  signInWithEmailAndPassword
 } from "firebase/auth";
-import {
-  firebaseAuth,
-  googleProvider,
-  isFirebaseConfigured
-} from "../lib/firebase";
+import { firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
+import { syncAuthenticatedUser } from "../lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -33,28 +29,17 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      if (mode === "register") {
-        await createUserWithEmailAndPassword(firebaseAuth, email, password);
-      } else {
-        await signInWithEmailAndPassword(firebaseAuth, email, password);
-      }
+      const credential =
+        mode === "register"
+          ? await createUserWithEmailAndPassword(firebaseAuth, email, password)
+          : await signInWithEmailAndPassword(firebaseAuth, email, password);
+
+      const token = await credential.user.getIdToken();
+      await syncAuthenticatedUser(token);
+
       await router.replace("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha na autenticacao.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleGoogleAuth() {
-    if (!firebaseAuth) return;
-    setLoading(true);
-    setError("");
-    try {
-      await signInWithPopup(firebaseAuth, googleProvider);
-      await router.replace("/");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao entrar com Google.");
     } finally {
       setLoading(false);
     }
@@ -100,7 +85,7 @@ export default function LoginPage() {
               {mode === "login" ? "Entrar no Nexus" : "Criar acesso"}
             </h2>
             <p className="mt-3 text-sm leading-6 text-slateblue">
-              Autenticacao via Firebase. Use Google ou e-mail e senha para acessar o painel.
+              Autenticacao via Firebase com e-mail e senha. Cada conta recebe uma area isolada no Nexus.
             </p>
 
             {!isFirebaseConfigured && (
@@ -144,15 +129,6 @@ export default function LoginPage() {
                 {loading ? "Processando..." : mode === "login" ? "Entrar" : "Registrar"}
               </button>
             </form>
-
-            <button
-              className="secondary-button mt-4 w-full disabled:cursor-not-allowed disabled:opacity-50"
-              type="button"
-              onClick={handleGoogleAuth}
-              disabled={loading || !isFirebaseConfigured}
-            >
-              Continuar com Google
-            </button>
 
             <button
               className="mt-6 text-sm font-bold text-slateblue"

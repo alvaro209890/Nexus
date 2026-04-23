@@ -12,7 +12,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ${HOME}/Downloads/BD_NEXUS:/documents
+      - /media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS:/documents
     depends_on:
       - chromadb
     restart: unless-stopped

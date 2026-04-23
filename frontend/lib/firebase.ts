@@ -1,7 +1,6 @@
 import { initializeApp, getApps } from "firebase/app";
 import {
   getAuth,
-  GoogleAuthProvider,
   type Auth
 } from "firebase/auth";
 
@@ -23,4 +22,3 @@ export const firebaseApp = isFirebaseConfigured
   : null;
 
 export const firebaseAuth: Auth | null = firebaseApp ? getAuth(firebaseApp) : null;
-export const googleProvider = new GoogleAuthProvider();

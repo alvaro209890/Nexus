@@ -6,3 +6,5 @@ groq
 docling
 sentence-transformers
 chromadb
+google-auth
+requests

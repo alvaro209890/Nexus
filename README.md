@@ -1,7 +1,7 @@
 # Nexus
 
 Nexus is a document-management and RAG system for PDF archives. It stores
-source documents in `~/Downloads/BD_NEXUS`, extracts Markdown with Docling,
+source documents in `/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS`, extracts Markdown with Docling,
 classifies metadata with Groq, indexes chunks in ChromaDB, keeps a persistent
 document manifest and chat memory, and exposes a Next.js dashboard protected by
 Firebase Authentication.
@@ -11,13 +11,13 @@ Firebase Authentication.
 - `backend/`: FastAPI API, PDF processing, Groq integration, embeddings and ChromaDB access.
 - `frontend/`: Next.js static export for Firebase Hosting.
 - `docker-compose.yml`: backend plus ChromaDB orchestration.
-- `cloudflared-config.yml.example`: Cloudflare Tunnel ingress example for `api-nexus.cursar.space`.
+- `cloudflared-config.yml.example`: Cloudflare Tunnel ingress example for `nexus-api.cursar.space`.
 - `firebase.json`: Firebase Hosting config pointing to `frontend/out`.
 
 Runtime document storage:
 
 ```bash
-mkdir -p "$HOME/Downloads/BD_NEXUS"
+mkdir -p "/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS"
 ```
 
 Nexus creates this runtime layout:
@@ -69,7 +69,7 @@ Upload behavior:
 Chat behavior:
 
 - The frontend stores a `nexus_session_id` in `localStorage`.
-- `/chat` appends each turn to `~/Downloads/BD_NEXUS/memory/{session_id}.jsonl`.
+- `/chat` appends each turn to `/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS/memory/{session_id}.jsonl`.
 - Recent memory turns are injected into future prompts alongside retrieved document context.
 
 Local development without Docker requires ChromaDB to be available at the
@@ -94,7 +94,7 @@ cp frontend/.env.local.example frontend/.env.local
 Fill the Firebase public variables and set:
 
 ```bash
-NEXT_PUBLIC_BACKEND_URL=https://api-nexus.cursar.space
+NEXT_PUBLIC_BACKEND_URL=https://nexus-api.cursar.space
 ```
 
 Install and run:
@@ -114,7 +114,7 @@ npm run build
 Deploy to Firebase Hosting:
 
 ```bash
-npx firebase-tools deploy --only hosting --project nexus
+npx firebase-tools deploy --only hosting --project nexus-98e32
 ```
 
 ## Firebase Authentication
@@ -124,7 +124,7 @@ In the Firebase Console for project `nexus`:
 1. Open Authentication.
 2. Enable Google provider.
 3. Enable Email/Password provider.
-4. Add authorized domains for `nexus.web.app`, `nexus.firebaseapp.com`, and `nexus.cursar.space`.
+4. Add authorized domains for `nexus-98e32.web.app`, `nexus-98e32.firebaseapp.com`, and `nexus.cursar.space`.
 5. Copy the web app SDK config into `frontend/.env.local`.
 
 ## Cloudflare Tunnel
@@ -134,7 +134,7 @@ In the Firebase Console for project `nexus`:
 ```bash
 cloudflared tunnel login
 cloudflared tunnel create nexus
-cloudflared tunnel route dns nexus api-nexus.cursar.space
+cloudflared tunnel route dns nexus nexus-api.cursar.space
 cloudflared tunnel --config cloudflared-config.yml run nexus
 ```
 

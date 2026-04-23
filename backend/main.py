@@ -5,36 +5,36 @@ import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 load_dotenv()
 
-app = FastAPI(title="Nexus API", version="0.1.0")
+app = FastAPI(title="Nexus API", version="0.2.0")
 
-DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", "~/Downloads/BD_NEXUS")).expanduser()
-ORIGINALS_DIR = DOCUMENTS_DIR / "originals"
-MARKDOWN_DIR = DOCUMENTS_DIR / "markdown"
-MANIFEST_PATH = DOCUMENTS_DIR / "manifest.jsonl"
-MEMORY_DIR = DOCUMENTS_DIR / "memory"
-for directory in (DOCUMENTS_DIR, ORIGINALS_DIR, MARKDOWN_DIR, MEMORY_DIR):
+DEFAULT_DOCUMENTS_DIR = "/media/server/HD Backup/Servidores_NAO_MEXA/Banco_de_dados/BD_NEXUS"
+DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", DEFAULT_DOCUMENTS_DIR)).expanduser()
+USERS_DIR = DOCUMENTS_DIR / "users"
+for directory in (DOCUMENTS_DIR, USERS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
-CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "nexus_documents")
+CHROMA_COLLECTION_PREFIX = os.getenv("CHROMA_COLLECTION", "nexus_documents")
 EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "nexus-98e32")
 MAX_GROQ_CHARS = int(os.getenv("MAX_GROQ_CHARS", "18000"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
@@ -42,8 +42,9 @@ CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
-    "https://nexus.web.app",
-    "https://nexus.firebaseapp.com",
+    "http://127.0.0.1:3000",
+    "https://nexus-98e32.web.app",
+    "https://nexus-98e32.firebaseapp.com",
     "https://nexus.cursar.space",
 ]
 CORS_ORIGINS = [
@@ -61,8 +62,25 @@ app.add_middleware(
 )
 
 groq_client = None
-chroma_collection = None
 embedding_model = None
+chroma_client = None
+chroma_collections: dict[str, Any] = {}
+firebase_request = None
+
+
+@dataclass
+class AuthenticatedUserContext:
+    uid: str
+    email: str | None
+    display_name: str | None
+    provider_ids: list[str]
+    user_dir: Path
+    profile_path: Path
+    originals_dir: Path
+    markdown_dir: Path
+    manifest_path: Path
+    memory_dir: Path
+    collection_name: str
 
 
 class ChatMessage(BaseModel):
@@ -110,6 +128,23 @@ class DocumentRecord(BaseModel):
     uploaded_at: str
 
 
+class AuthenticatedUserProfile(BaseModel):
+    uid: str
+    email: str | None = None
+    display_name: str | None = None
+    provider_ids: list[str] = Field(default_factory=list)
+    status: str = "active"
+    created_at: str
+    last_login_at: str
+    user_root: str
+    profile_path: str
+    originals_dir: str
+    markdown_dir: str
+    manifest_path: str
+    memory_dir: str
+    collection_name: str
+
+
 def warn_missing_groq_key() -> None:
     if not GROQ_API_KEY:
         print("GROQ_API_KEY not configured. AI classification and chat will not work.")
@@ -118,36 +153,59 @@ def warn_missing_groq_key() -> None:
 warn_missing_groq_key()
 
 
+def require_authenticated_user(authorization: str | None = Header(default=None)) -> AuthenticatedUserContext:
+    token = extract_bearer_token(authorization)
+    decoded_token = verify_firebase_id_token(token)
+    return build_user_context(decoded_token)
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "documents_dir": str(DOCUMENTS_DIR),
-        "manifest_path": str(MANIFEST_PATH),
-        "memory_dir": str(MEMORY_DIR),
+        "users_dir": str(USERS_DIR),
         "groq_configured": bool(GROQ_API_KEY),
-        "chroma": {"host": CHROMA_HOST, "port": CHROMA_PORT, "collection": CHROMA_COLLECTION},
+        "firebase_project_id": FIREBASE_PROJECT_ID,
+        "chroma": {
+            "host": CHROMA_HOST,
+            "port": CHROMA_PORT,
+            "collection_prefix": CHROMA_COLLECTION_PREFIX,
+        },
     }
 
 
+@app.post("/auth/sync", response_model=AuthenticatedUserProfile)
+async def sync_authenticated_user(
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> AuthenticatedUserProfile:
+    profile = upsert_user_profile(current_user)
+    return AuthenticatedUserProfile(**profile)
+
+
 @app.post("/upload-document")
-async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, Any]:
     if not is_pdf_upload(file):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
+    ensure_user_storage(current_user)
+
     document_id = str(uuid.uuid4())
     original_name = safe_filename(file.filename or "document.pdf")
-    staging_path = ORIGINALS_DIR / f".upload-{document_id}.pdf"
+    staging_path = current_user.originals_dir / f".upload-{document_id}.pdf"
     save_upload(file, staging_path)
     file_hash = hash_file(staging_path)
 
-    existing_record = find_document_by_hash(file_hash)
+    existing_record = find_document_by_hash(current_user, file_hash)
     if existing_record is not None:
         staging_path.unlink(missing_ok=True)
         return {
             **existing_record,
             "duplicate": True,
-            "message": "Document already indexed. Returning existing record.",
+            "message": "Document already indexed for this user. Returning existing record.",
         }
 
     markdown_text = extract_pdf_markdown(staging_path)
@@ -156,7 +214,7 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
 
     ai_result = analyze_document_with_groq(markdown_text, original_name)
-    file_plan = build_file_plan(ai_result, original_name, document_id)
+    file_plan = build_file_plan(current_user, ai_result, original_name, document_id)
 
     file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
     file_plan["markdown_dir"].mkdir(parents=True, exist_ok=True)
@@ -167,9 +225,15 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
     markdown_path.write_text(markdown_text, encoding="utf-8")
 
     chunks = split_text(markdown_text)
+    if not chunks:
+        pdf_path.unlink(missing_ok=True)
+        markdown_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="Could not build semantic chunks from this PDF.")
+
     embeddings = embed_texts(chunks)
     metadatas = [
         build_chroma_metadata(
+            current_user=current_user,
             document_id=document_id,
             file_hash=file_hash,
             chunk_index=index,
@@ -184,7 +248,7 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
     ]
     ids = [f"{document_id}:{index}" for index in range(len(chunks))]
 
-    collection = get_chroma_collection()
+    collection = get_chroma_collection(current_user.collection_name)
     collection.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
 
     record = build_document_record(
@@ -197,14 +261,17 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
         markdown_path=markdown_path,
         chunks_indexed=len(chunks),
     )
-    append_manifest_record(record)
+    append_manifest_record(current_user, record)
 
     return {**record, "duplicate": False, "metadata": ai_result.get("metadata", {})}
 
 
 @app.get("/documents", response_model=list[DocumentRecord])
-async def list_documents(limit: int = Query(default=50, ge=1, le=500)) -> list[DocumentRecord]:
-    records = read_manifest_records()
+async def list_documents(
+    limit: int = Query(default=50, ge=1, le=500),
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> list[DocumentRecord]:
+    records = read_manifest_records(current_user)
     return [DocumentRecord(**record) for record in records[-limit:]][::-1]
 
 
@@ -212,18 +279,22 @@ async def list_documents(limit: int = Query(default=50, ge=1, le=500)) -> list[D
 async def search_semantic(
     query: str = Query(..., min_length=1),
     limit: int = Query(default=5, ge=1, le=20),
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> list[SearchResult]:
-    return semantic_search(query=query, limit=limit)
+    return semantic_search(current_user=current_user, query=query, limit=limit)
 
 
 @app.post("/chat")
-async def chat(request: ChatRequest) -> dict[str, Any]:
+async def chat(
+    request: ChatRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, Any]:
     ensure_groq_configured()
 
-    references = semantic_search(query=request.message, limit=request.limit)
-    context = build_rag_context(references)
+    references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
+    context = build_rag_context(current_user, references)
     session_id = safe_session_id(request.session_id)
-    persistent_history = load_session_memory(session_id)
+    persistent_history = load_session_memory(current_user, session_id)
     messages = build_chat_messages(request, context, persistent_history)
 
     client = get_groq_client()
@@ -234,6 +305,7 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
     )
     answer = response.choices[0].message.content or ""
     save_session_turn(
+        current_user=current_user,
         session_id=session_id,
         user_message=request.message,
         assistant_message=answer,
@@ -248,18 +320,24 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
 
 
 @app.get("/memory/{session_id}")
-async def get_memory(session_id: str) -> dict[str, Any]:
+async def get_memory(
+    session_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, Any]:
     clean_session_id = safe_session_id(session_id)
     return {
         "session_id": clean_session_id,
-        "turns": load_session_memory(clean_session_id),
+        "turns": load_session_memory(current_user, clean_session_id),
     }
 
 
 @app.delete("/memory/{session_id}")
-async def delete_memory(session_id: str) -> dict[str, str]:
+async def delete_memory(
+    session_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, str]:
     clean_session_id = safe_session_id(session_id)
-    session_memory_path(clean_session_id).unlink(missing_ok=True)
+    session_memory_path(current_user, clean_session_id).unlink(missing_ok=True)
     return {"session_id": clean_session_id, "status": "deleted"}
 
 
@@ -307,6 +385,156 @@ def safe_slug(value: str, fallback: str = "documento") -> str:
 
 def safe_session_id(value: str) -> str:
     return safe_slug(value, fallback="default")[:80]
+
+
+def user_folder_name(uid: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", uid):
+        return uid
+    suffix = sha256(uid.encode("utf-8")).hexdigest()[:8]
+    return f"{safe_slug(uid, fallback='user')[:96]}-{suffix}"
+
+
+def collection_name_for_user(uid: str) -> str:
+    base = safe_slug(uid, fallback="user")
+    suffix = sha256(uid.encode("utf-8")).hexdigest()[:8]
+    return f"{CHROMA_COLLECTION_PREFIX}_{base[:40]}_{suffix}"
+
+
+def extract_provider_ids(decoded_token: dict[str, Any]) -> list[str]:
+    provider_ids: set[str] = set()
+    firebase_claims = decoded_token.get("firebase")
+    if isinstance(firebase_claims, dict):
+        sign_in_provider = firebase_claims.get("sign_in_provider")
+        if isinstance(sign_in_provider, str) and sign_in_provider.strip():
+            provider_ids.add(sign_in_provider)
+
+        identities = firebase_claims.get("identities")
+        if isinstance(identities, dict):
+            for provider_id in identities:
+                if isinstance(provider_id, str) and provider_id.strip():
+                    provider_ids.add(provider_id)
+
+    return sorted(provider_ids)
+
+
+def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContext:
+    uid = str(decoded_token.get("uid") or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Firebase token does not contain a valid uid.")
+
+    folder_name = user_folder_name(uid)
+    user_dir = USERS_DIR / folder_name
+    return AuthenticatedUserContext(
+        uid=uid,
+        email=str(decoded_token.get("email")).strip() if decoded_token.get("email") else None,
+        display_name=str(decoded_token.get("name")).strip() if decoded_token.get("name") else None,
+        provider_ids=extract_provider_ids(decoded_token),
+        user_dir=user_dir,
+        profile_path=user_dir / "profile.json",
+        originals_dir=user_dir / "originals",
+        markdown_dir=user_dir / "markdown",
+        manifest_path=user_dir / "manifest.jsonl",
+        memory_dir=user_dir / "memory",
+        collection_name=collection_name_for_user(uid),
+    )
+
+
+def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
+    for directory in (
+        current_user.user_dir,
+        current_user.originals_dir,
+        current_user.markdown_dir,
+        current_user.memory_dir,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    current_user.manifest_path.touch(exist_ok=True)
+
+
+def read_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any]:
+    ensure_user_storage(current_user)
+    existing = read_json_object(current_user.profile_path) or {}
+    timestamp = datetime.now(UTC).isoformat()
+    profile = {
+        "uid": current_user.uid,
+        "email": current_user.email,
+        "display_name": current_user.display_name,
+        "provider_ids": current_user.provider_ids,
+        "status": "active",
+        "created_at": str(existing.get("created_at") or timestamp),
+        "last_login_at": timestamp,
+        "user_root": str(current_user.user_dir),
+        "profile_path": str(current_user.profile_path),
+        "originals_dir": str(current_user.originals_dir),
+        "markdown_dir": str(current_user.markdown_dir),
+        "manifest_path": str(current_user.manifest_path),
+        "memory_dir": str(current_user.memory_dir),
+        "collection_name": current_user.collection_name,
+    }
+    current_user.profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+    return profile
+
+
+def extract_bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header.")
+
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Authorization header must use Bearer token.")
+    return token.strip()
+
+
+def get_google_request():
+    global firebase_request
+    if firebase_request is None:
+        try:
+            from google.auth.transport import requests as google_requests
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="google-auth is not installed on the backend environment.",
+            ) from exc
+        firebase_request = google_requests.Request()
+    return firebase_request
+
+
+def verify_firebase_id_token(token: str) -> dict[str, Any]:
+    try:
+        from google.oauth2 import id_token as google_id_token
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="google-auth is not installed on the backend environment.",
+        ) from exc
+
+    try:
+        decoded_token = google_id_token.verify_firebase_token(
+            token,
+            get_google_request(),
+            FIREBASE_PROJECT_ID,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired Firebase token.") from exc
+
+    if not decoded_token:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token.")
+
+    audience = decoded_token.get("aud")
+    issuer = decoded_token.get("iss")
+    expected_issuer = f"https://securetoken.google.com/{FIREBASE_PROJECT_ID}"
+    if audience != FIREBASE_PROJECT_ID or issuer != expected_issuer:
+        raise HTTPException(status_code=401, detail="Firebase token does not belong to this project.")
+
+    return decoded_token
 
 
 def extract_pdf_markdown(pdf_path: Path) -> str:
@@ -408,11 +636,18 @@ def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str,
     }
 
 
-def build_file_plan(ai_result: dict[str, Any], original_name: str, document_id: str) -> dict[str, Any]:
+def build_file_plan(
+    current_user: AuthenticatedUserContext,
+    ai_result: dict[str, Any],
+    original_name: str,
+    document_id: str,
+) -> dict[str, Any]:
     metadata = ai_result.get("metadata", {})
     classification = safe_slug(str(ai_result.get("classification") or "outro"), "outro")
     title = str(metadata.get("title") or Path(original_name).stem)
-    year = extract_year(str(metadata.get("date") or "")) or extract_year(str(ai_result.get("suggested_name") or ""))
+    year = extract_year(str(metadata.get("date") or "")) or extract_year(
+        str(ai_result.get("suggested_name") or "")
+    )
     if not year:
         year = "sem-data"
 
@@ -426,8 +661,8 @@ def build_file_plan(ai_result: dict[str, Any], original_name: str, document_id: 
 
     folder_parts = resolve_folder_parts(ai_result, classification, year)
     relative_folder = "/".join(folder_parts)
-    pdf_dir = ORIGINALS_DIR.joinpath(*folder_parts)
-    markdown_dir = MARKDOWN_DIR.joinpath(*folder_parts)
+    pdf_dir = current_user.originals_dir.joinpath(*folder_parts)
+    markdown_dir = current_user.markdown_dir.joinpath(*folder_parts)
 
     return {
         "classification": classification,
@@ -528,16 +763,17 @@ def build_document_record(
     }
 
 
-def append_manifest_record(record: dict[str, Any]) -> None:
-    with MANIFEST_PATH.open("a", encoding="utf-8") as output:
+def append_manifest_record(current_user: AuthenticatedUserContext, record: dict[str, Any]) -> None:
+    ensure_user_storage(current_user)
+    with current_user.manifest_path.open("a", encoding="utf-8") as output:
         output.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def read_manifest_records() -> list[dict[str, Any]]:
-    if not MANIFEST_PATH.exists():
+def read_manifest_records(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
+    if not current_user.manifest_path.exists():
         return []
     records: list[dict[str, Any]] = []
-    with MANIFEST_PATH.open("r", encoding="utf-8") as input_file:
+    with current_user.manifest_path.open("r", encoding="utf-8") as input_file:
         for line in input_file:
             line = line.strip()
             if not line:
@@ -549,8 +785,8 @@ def read_manifest_records() -> list[dict[str, Any]]:
     return records
 
 
-def find_document_by_hash(file_hash: str) -> dict[str, Any] | None:
-    for record in reversed(read_manifest_records()):
+def find_document_by_hash(current_user: AuthenticatedUserContext, file_hash: str) -> dict[str, Any] | None:
+    for record in reversed(read_manifest_records(current_user)):
         if record.get("sha256") == file_hash:
             return record
     return None
@@ -621,20 +857,28 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [embedding.tolist() for embedding in embeddings]
 
 
-def get_chroma_collection():
-    global chroma_collection
-    if chroma_collection is None:
+def get_chroma_client():
+    global chroma_client
+    if chroma_client is None:
         import chromadb
 
-        client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-        chroma_collection = client.get_or_create_collection(
-            name=CHROMA_COLLECTION,
+        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    return chroma_client
+
+
+def get_chroma_collection(collection_name: str):
+    global chroma_collections
+    if collection_name not in chroma_collections:
+        client = get_chroma_client()
+        chroma_collections[collection_name] = client.get_or_create_collection(
+            name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
-    return chroma_collection
+    return chroma_collections[collection_name]
 
 
 def build_chroma_metadata(
+    current_user: AuthenticatedUserContext,
     document_id: str,
     file_hash: str,
     chunk_index: int,
@@ -651,6 +895,7 @@ def build_chroma_metadata(
         technologies = []
 
     return {
+        "owner_uid": current_user.uid,
         "document_id": document_id,
         "sha256": file_hash,
         "chunk_index": chunk_index,
@@ -665,14 +910,18 @@ def build_chroma_metadata(
         "tags": json.dumps(normalize_string_list(metadata.get("tags")), ensure_ascii=False),
         "project": str(metadata.get("project") or ""),
         "summary": str(metadata.get("summary") or ""),
-        "folder_path": "/".join(markdown_path.relative_to(MARKDOWN_DIR).parts[:-1]),
+        "folder_path": "/".join(markdown_path.relative_to(current_user.markdown_dir).parts[:-1]),
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
     }
 
 
-def semantic_search(query: str, limit: int = 5) -> list[SearchResult]:
-    collection = get_chroma_collection()
+def semantic_search(
+    current_user: AuthenticatedUserContext,
+    query: str,
+    limit: int = 5,
+) -> list[SearchResult]:
+    collection = get_chroma_collection(current_user.collection_name)
     query_embedding = embed_texts([query])[0]
     results = collection.query(
         query_embeddings=[query_embedding],
@@ -688,6 +937,9 @@ def semantic_search(query: str, limit: int = 5) -> list[SearchResult]:
     output: list[SearchResult] = []
     for index, chunk_id in enumerate(ids):
         metadata = dict(metadatas[index] or {})
+        if str(metadata.get("owner_uid") or "") != current_user.uid:
+            continue
+
         distance = distances[index] if index < len(distances) else None
         score = None if distance is None else max(0.0, 1.0 - float(distance))
         output.append(
@@ -706,21 +958,33 @@ def semantic_search(query: str, limit: int = 5) -> list[SearchResult]:
     return output
 
 
-def build_rag_context(references: list[SearchResult]) -> str:
+def is_path_within(base: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+    except FileNotFoundError:
+        return False
+
+
+def build_rag_context(current_user: AuthenticatedUserContext, references: list[SearchResult]) -> str:
     blocks: list[str] = []
     for index, reference in enumerate(references, start=1):
         title = reference.metadata.get("title") or reference.suggested_name or reference.document_id
         markdown_path = reference.markdown_path
         source_text = reference.snippet
         if markdown_path:
-            source_text = read_relevant_markdown(Path(markdown_path), reference.snippet)
+            source_text = read_relevant_markdown(current_user, Path(markdown_path), reference.snippet)
         blocks.append(f"[Fonte {index}] {title}\n{source_text[:4000]}")
     return "\n\n".join(blocks)
 
 
-def read_relevant_markdown(path: Path, fallback: str) -> str:
+def read_relevant_markdown(current_user: AuthenticatedUserContext, path: Path, fallback: str) -> str:
     try:
         if not path.exists() or not path.is_file():
+            return fallback
+        if not is_path_within(current_user.user_dir, path):
             return fallback
         text = path.read_text(encoding="utf-8")
         return text[:4000] if text else fallback
@@ -735,6 +999,7 @@ def build_chat_messages(
 ) -> list[dict[str, str]]:
     system_prompt = (
         "You are Nexus, a precise assistant for a private document archive. "
+        "Each authenticated user has a fully isolated workspace with isolated documents and memory. "
         "Answer in the user's language. Use only the supplied context when citing documents. "
         "If the context is insufficient, say what is missing. Include concise references. "
         "Use the persistent session memory to preserve user preferences and prior conclusions."
@@ -756,12 +1021,15 @@ def build_chat_messages(
     return messages
 
 
-def session_memory_path(session_id: str) -> Path:
-    return MEMORY_DIR / f"{session_id}.jsonl"
+def session_memory_path(current_user: AuthenticatedUserContext, session_id: str) -> Path:
+    return current_user.memory_dir / f"{session_id}.jsonl"
 
 
-def load_session_memory(session_id: str) -> list[dict[str, Any]]:
-    path = session_memory_path(session_id)
+def load_session_memory(
+    current_user: AuthenticatedUserContext,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    path = session_memory_path(current_user, session_id)
     if not path.exists():
         return []
     turns: list[dict[str, Any]] = []
@@ -778,11 +1046,13 @@ def load_session_memory(session_id: str) -> list[dict[str, Any]]:
 
 
 def save_session_turn(
+    current_user: AuthenticatedUserContext,
     session_id: str,
     user_message: str,
     assistant_message: str,
     references: list[SearchResult],
 ) -> None:
+    ensure_user_storage(current_user)
     record = {
         "timestamp": datetime.now(UTC).isoformat(),
         "user": user_message,
@@ -796,7 +1066,7 @@ def save_session_turn(
             for reference in references
         ],
     }
-    with session_memory_path(session_id).open("a", encoding="utf-8") as output:
+    with session_memory_path(current_user, session_id).open("a", encoding="utf-8") as output:
         output.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
