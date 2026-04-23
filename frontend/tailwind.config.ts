@@ -10,11 +10,11 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#101820",
-        amberline: "#ECA72C",
-        slateblue: "#385170",
-        porcelain: "#F7F3EA",
-        moss: "#6A8D73"
+        ink: "#171b22",
+        amberline: "#7eb2d6",
+        slateblue: "#c7d0db",
+        porcelain: "#13171d",
+        moss: "#2d3540"
       },
       boxShadow: {
         panel: "0 24px 80px rgba(16, 24, 32, 0.16)"

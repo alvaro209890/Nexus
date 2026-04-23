@@ -93,6 +93,12 @@ export type DocumentRecord = {
   size_bytes?: number | null;
 };
 
+export type FolderRecord = {
+  path: string;
+  name: string;
+  created_at: string;
+};
+
 const LOCAL_API_BASE = "http://127.0.0.1:18000";
 const PUBLIC_API_BASE = "https://nexus-api.cursar.space";
 
@@ -155,15 +161,65 @@ export async function syncAuthenticatedUser(token: string): Promise<Authenticate
   return parseJsonResponse<AuthenticatedUserProfile>(response);
 }
 
-export async function uploadDocument(file: File, token: string): Promise<UploadResponse> {
+export async function uploadDocument(
+  file: File,
+  token: string,
+  onProgress?: (progress: number) => void
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${resolveApiBase()}/upload-document`, {
-    method: "POST",
-    headers: authHeaders(token),
-    body: formData
+
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${resolveApiBase()}/upload-document`);
+
+    const headers = authHeaders(token);
+    Object.entries(headers).forEach(([key, value]) => {
+      if (typeof value === "string") {
+        xhr.setRequestHeader(key, value);
+      }
+    });
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable || !onProgress) return;
+      onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    });
+
+    xhr.addEventListener("load", () => {
+      const contentType = xhr.getResponseHeader("content-type") || "";
+      const responseText = xhr.responseText || "";
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        try {
+          const payload = contentType.includes("application/json") ? JSON.parse(responseText) : null;
+          const detail =
+            typeof payload?.detail === "string"
+              ? payload.detail
+              : typeof payload?.message === "string"
+                ? payload.message
+                : responseText;
+          reject(new Error(detail || `Request failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(responseText || `Request failed with status ${xhr.status}`));
+        }
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(responseText) as UploadResponse;
+        onProgress?.(100);
+        resolve(payload);
+      } catch {
+        reject(new Error("Resposta inválida do servidor ao enviar documento."));
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Falha de conexão durante o upload do documento."));
+    });
+
+    xhr.send(formData);
   });
-  return parseJsonResponse<UploadResponse>(response);
 }
 
 export async function searchSemantic(query: string, token: string): Promise<SearchResult[]> {
@@ -224,6 +280,22 @@ export async function listDocuments(token: string, limit = 20): Promise<Document
     headers: authHeaders(token)
   });
   return parseJsonResponse<DocumentRecord[]>(response);
+}
+
+export async function listFolders(token: string): Promise<FolderRecord[]> {
+  const response = await fetch(`${resolveApiBase()}/folders`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<FolderRecord[]>(response);
+}
+
+export async function createFolder(name: string, parentPath: string, token: string): Promise<FolderRecord> {
+  const response = await fetch(`${resolveApiBase()}/folders`, {
+    method: "POST",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ name, parent_path: parentPath })
+  });
+  return parseJsonResponse<FolderRecord>(response);
 }
 
 function parseDownloadFilename(contentDisposition: string | null, fallbackName: string): string {

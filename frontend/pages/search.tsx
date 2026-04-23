@@ -33,22 +33,25 @@ export default function SearchPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">Busca Semântica</h1>
-        <p className="text-slateblue text-sm mt-1.5">Localize informações precisas em toda a sua base de documentos.</p>
+        <h1 className="text-2xl font-bold tracking-tight">Busca</h1>
+        <p className="text-slateblue text-sm mt-1.5">Encontre trechos relevantes em toda a base com consultas em linguagem natural.</p>
       </header>
 
       <GlassCard>
-        <form onSubmit={handleSearch} className="flex gap-3">
+        <form onSubmit={handleSearch} className="flex flex-col gap-3 md:flex-row">
           <Input 
-            placeholder="O que você está procurando hoje? Ex: 'contratos de tecnologia'..."
+            placeholder="Ex.: contrato de suporte, politica de seguranca, termo aditivo 2024"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="!rounded-full px-4"
+            className="px-4"
           />
           <Button type="submit" isLoading={isBusy} className="px-6 min-w-[120px]">
             Pesquisar
           </Button>
         </form>
+        <p className="mt-3 text-sm text-slateblue/60">
+          Sugestoes: &ldquo;clausula de reajuste&rdquo;, &ldquo;cronograma do projeto&rdquo;, &ldquo;documentos sobre LGPD&rdquo;.
+        </p>
       </GlassCard>
 
       <div className="space-y-4">
@@ -57,17 +60,18 @@ export default function SearchPage() {
         </div>
 
         {error && (
-          <div className="p-3 rounded-lg bg-red-50 border border-red-100 text-red-600 font-semibold text-xs">
+          <div className="rounded-lg border border-[rgba(228,149,149,0.3)] bg-[rgba(228,149,149,0.12)] p-3 text-sm font-medium text-white">
             {error}
           </div>
         )}
 
-        {results.length === 0 && !isBusy && !error && (
-          <div className="text-center py-12 bg-white/30 rounded-xl border border-dashed border-slateblue/20">
+        {results.length === 0 && !isBusy && !error && !query.trim() && (
+          <div className="empty-state">
             <svg className="w-12 h-12 mx-auto mb-3 text-slateblue/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <p className="text-slateblue/60 text-sm font-medium italic">Aguardando entrada para consulta vetorial...</p>
+            <p className="text-base font-semibold">Nenhum resultado ainda.</p>
+            <p className="max-w-md text-sm text-slateblue/70">Digite uma consulta para localizar trechos relevantes nos documentos indexados.</p>
           </div>
         )}
 
@@ -76,7 +80,7 @@ export default function SearchPage() {
             <GlassCard key={index} className="result-card flex flex-col">
               <div className="flex items-start justify-between mb-3">
                 <StatusChip label={res.suggested_name || res.metadata?.filename || "Documento"} variant="info" />
-                <span className="text-[0.55rem] font-bold text-slateblue uppercase tracking-widest bg-white/50 px-2 py-1 rounded-md border border-white/60">
+                <span className="rounded-md border border-white/10 bg-[rgba(20,25,33,0.72)] px-2 py-1 text-[0.68rem] font-bold text-slateblue">
                   Score: {((res.score ?? 0) * 100).toFixed(1)}%
                 </span>
               </div>
@@ -90,6 +94,11 @@ export default function SearchPage() {
             </GlassCard>
           ))}
         </div>
+        {results.length === 0 && !isBusy && query.trim() && !error && (
+          <div className="rounded-lg border border-white/10 bg-[rgba(20,25,33,0.72)] p-4 text-sm text-slateblue/70">
+            Nenhum resultado encontrado para essa consulta. Tente termos mais amplos ou nomes de documentos.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { DocumentRecord, downloadDocument, listDocuments } from "../lib/api";
+import { createFolder, DocumentRecord, downloadDocument, FolderRecord, listDocuments, listFolders } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
@@ -16,12 +17,15 @@ type FolderNode = {
 export default function FilesPage() {
   const { user, authProfile, getCurrentToken } = useAuth();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [currentPath, setCurrentPath] = useState("");
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set([""]));
   const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"recent" | "name" | "size">("recent");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
@@ -29,8 +33,12 @@ export default function FilesPage() {
     setError("");
     try {
       const token = await getCurrentToken();
-      const docs = await listDocuments(token, 500);
+      const [docs, availableFolders] = await Promise.all([
+        listDocuments(token, 500),
+        listFolders(token)
+      ]);
       setDocuments(docs);
+      setFolders(availableFolders);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao carregar os arquivos.");
     } finally {
@@ -83,7 +91,28 @@ export default function FilesPage() {
     }
   }
 
-  const folderMap = useMemo(() => buildFolderMap(documents), [documents]);
+  async function handleCreateFolder() {
+    const folderName = window.prompt("Nome da nova pasta");
+    if (!folderName) return;
+
+    setCreatingFolder(true);
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      const createdFolder = await createFolder(folderName, currentPath, token);
+      setFolders((current) => {
+        const existing = current.some((folder) => folder.path === createdFolder.path);
+        return existing ? current : [...current, createdFolder].sort((left, right) => left.path.localeCompare(right.path, "pt-BR"));
+      });
+      selectFolder(createdFolder.path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nao foi possivel criar a pasta.");
+    } finally {
+      setCreatingFolder(false);
+    }
+  }
+
+  const folderMap = useMemo(() => buildFolderMap(documents, folders), [documents, folders]);
   const currentNode = folderMap.get(currentPath) ?? folderMap.get("")!;
   
   const folderChildren = useMemo(() => {
@@ -95,10 +124,17 @@ export default function FilesPage() {
   }, [currentNode, folderMap, query]);
 
   const visibleFiles = useMemo(() => {
-    return currentNode.files
-      .filter((document) => matchesQuery(document, query))
-      .sort((left, right) => right.uploaded_at.localeCompare(left.uploaded_at));
-  }, [currentNode, query]);
+    const filtered = currentNode.files.filter((document) => matchesQuery(document, query));
+    return filtered.sort((left, right) => {
+      if (sortBy === "name") {
+        return left.original_name.localeCompare(right.original_name, "pt-BR");
+      }
+      if (sortBy === "size") {
+        return getDocumentSize(right) - getDocumentSize(left);
+      }
+      return right.uploaded_at.localeCompare(left.uploaded_at);
+    });
+  }, [currentNode, query, sortBy]);
 
   const selectedDoc = useMemo(() => {
     return documents.find(d => d.document_id === selectedDocId) || null;
@@ -122,7 +158,7 @@ export default function FilesPage() {
             Navegue pelo repositório privado estruturado pela IA. Visualize metadados, resumos e baixe originais.
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard label="Arquivos" value={String(documents.length)} icon={<DocsIcon />} />
           <MetricCard label="Pastas" value={String(Math.max(folderMap.size - 1, 0))} icon={<FolderIcon />} />
           <MetricCard label="Volume" value={formatBytes(totalSize)} icon={<StorageIcon />} />
@@ -130,7 +166,39 @@ export default function FilesPage() {
       </header>
 
       <GlassCard className="!p-3 border-white/60">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="ghost"
+                className="!py-2 !px-4 !text-sm"
+                isLoading={creatingFolder}
+                onClick={() => void handleCreateFolder()}
+              >
+                <FolderAddIcon />
+                Nova pasta
+              </Button>
+              <Link href="/documents" className="primary-button !py-2 !px-4 !text-sm">
+                <UploadIcon />
+                Upload
+              </Link>
+            </div>
+
+            <label className="text-xs text-slateblue/60">
+              <span className="mb-1 block">Ordenar por</span>
+              <select
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value as "recent" | "name" | "size")}
+                className="field !min-h-[2.6rem] !py-2"
+              >
+                <option value="recent">Mais recentes</option>
+                <option value="name">Nome</option>
+                <option value="size">Tamanho</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-1 text-[0.7rem] font-bold text-slateblue/80">
             <button
               type="button"
@@ -153,22 +221,29 @@ export default function FilesPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <div className="relative flex-1 lg:min-w-[280px]">
+            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div className="relative flex-1 sm:min-w-[280px]">
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="field !rounded-xl !py-2 !pl-9 !text-xs"
-                placeholder="Pesquisar título, autor, tag..."
+                placeholder="Filtrar por nome, autor, tag ou pasta"
               />
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slateblue/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </div>
-            <Button variant="secondary" className="!py-2 !px-4 !text-xs" onClick={() => void loadData()}>
+            <Button
+              variant="secondary"
+              className="!py-2 !px-4 !text-xs"
+              onClick={() => void loadData()}
+              aria-label="Atualizar lista de arquivos"
+            >
               <RefreshIcon />
+              Atualizar
             </Button>
           </div>
+        </div>
         </div>
       </GlassCard>
 
@@ -186,7 +261,7 @@ export default function FilesPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[250px_minmax(0,1fr)_300px]">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
         {/* Sidebar: Folder Tree */}
         <GlassCard className="!p-0 overflow-hidden flex flex-col h-[65vh] border-white/50">
           <div className="border-b border-white/10 bg-slate-950/30 px-4 py-3">
@@ -216,8 +291,8 @@ export default function FilesPage() {
                 <p className="eyebrow truncate">Contexto: {currentPath || "Raiz"}</p>
               </div>
               <div className="flex gap-2">
-                <StatusChip label={`${folderChildren.length}p`} variant="info" />
-                <StatusChip label={`${visibleFiles.length}f`} variant="success" />
+                <StatusChip label={`${folderChildren.length} pastas`} variant="info" />
+                <StatusChip label={`${visibleFiles.length} arquivos`} variant="success" />
               </div>
             </div>
 
@@ -268,10 +343,13 @@ export default function FilesPage() {
                       ))
                     ) : visibleFiles.length === 0 ? (
                       <tr>
-                        <td colSpan={3} className="py-24 text-center">
-                          <div className="flex flex-col items-center opacity-30 italic">
+                        <td colSpan={3} className="py-8">
+                          <div className="empty-state mx-4 !min-h-[14rem]">
                             <EmptyFolderIcon />
-                            <p className="text-sm mt-3 font-medium">Pasta vazia ou sem correspondências</p>
+                            <p className="text-base font-semibold">Nenhum arquivo encontrado.</p>
+                            <p className="max-w-sm text-sm text-slateblue/70">
+                              Tente mudar o filtro, voltar para outra pasta ou enviar novos documentos.
+                            </p>
                           </div>
                         </td>
                       </tr>
@@ -280,6 +358,13 @@ export default function FilesPage() {
                         <tr 
                           key={document.document_id}
                           onClick={() => setSelectedDocId(document.document_id)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedDocId(document.document_id);
+                            }
+                          }}
+                          tabIndex={0}
                           className={`cursor-pointer transition-all ${selectedDocId === document.document_id ? "bg-amberline/5 border-l-2 border-l-amberline shadow-inner" : "hover:bg-white/40"}`}
                         >
                           <td className="text-center">
@@ -289,16 +374,16 @@ export default function FilesPage() {
                           </td>
                           <td className="py-3 px-2">
                             <div className="min-w-0">
-                              <p className="truncate text-xs font-bold text-ink">{document.original_name}</p>
+                              <p className="truncate text-sm font-bold text-ink">{document.original_name}</p>
                               <div className="flex items-center gap-2 mt-1">
-                                <span className="text-[0.6rem] font-bold uppercase text-slateblue/40 tracking-wider truncate max-w-[150px]">{document.suggested_name}</span>
-                                <span className="text-[0.6rem] px-1.5 py-0.5 rounded-md bg-slate-800/80 border border-white/10 text-slateblue/60 font-bold">{document.classification || "PDF"}</span>
+                                <span className="max-w-[150px] truncate text-[0.7rem] font-bold text-slateblue/60">{document.suggested_name}</span>
+                                <span className="rounded-md border border-white/10 bg-slate-800/80 px-1.5 py-0.5 text-[0.68rem] font-bold text-slateblue/60">{document.classification || "PDF"}</span>
                               </div>
                             </div>
                           </td>
                           <td className="text-right px-4">
-                            <p className="text-[0.65rem] font-bold text-slateblue/50">{formatDate(document.uploaded_at)}</p>
-                            <p className="text-[0.6rem] font-extrabold text-amberline uppercase mt-1">{formatBytes(getDocumentSize(document))}</p>
+                            <p className="text-[0.76rem] font-bold text-slateblue/50">{formatDate(document.uploaded_at)}</p>
+                            <p className="mt-1 text-[0.68rem] font-extrabold uppercase text-slateblue/60">{formatBytes(getDocumentSize(document))}</p>
                           </td>
                         </tr>
                       ))
@@ -315,8 +400,8 @@ export default function FilesPage() {
            <GlassCard className="h-[65vh] flex flex-col p-0 overflow-hidden border-white/50 sticky top-0">
               {selectedDoc ? (
                 <>
-                  <div className="border-b border-white/60 bg-amberline/10 px-5 py-4 shrink-0">
-                    <p className="eyebrow text-sky-200 mb-1">Ficha Técnica</p>
+                  <div className="border-b border-white/60 bg-[rgba(126,178,214,0.1)] px-5 py-4 shrink-0">
+                    <p className="eyebrow mb-1">Ficha tecnica</p>
                     <h3 className="text-sm font-bold text-ink line-clamp-2 leading-tight">{selectedDoc.original_name}</h3>
                   </div>
                   
@@ -338,7 +423,7 @@ export default function FilesPage() {
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <p className="eyebrow !text-[0.6rem] mb-1.5 opacity-60">Autor / Origem</p>
-                        <p className="text-xs font-bold text-slateblue truncate">{selectedDoc.author || "Não informado"}</p>
+                        <p className="text-xs font-bold text-slateblue truncate">{selectedDoc.author || "Nao informado"}</p>
                       </div>
                       <div>
                         <p className="eyebrow !text-[0.6rem] mb-1.5 opacity-60">Ano Base</p>
@@ -378,15 +463,15 @@ export default function FilesPage() {
                       <DownloadIcon />
                       Baixar PDF Original
                     </Button>
-                    <p className="text-[0.55rem] text-center mt-2 font-bold text-slateblue/40 uppercase tracking-widest">Acesso seguro via Vault Nexus</p>
+                    <p className="mt-2 text-center text-[0.62rem] font-bold uppercase tracking-[0.08em] text-slateblue/40">Download protegido</p>
                   </div>
                 </>
               ) : (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center opacity-30">
-                  <div className="w-16 h-16 rounded-full bg-slateblue/10 flex items-center justify-center mb-4">
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center opacity-60">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-slateblue/10">
                     <InfoIcon className="w-8 h-8 text-slateblue" />
                   </div>
-                  <p className="text-sm font-bold italic text-slateblue">Selecione um arquivo para visualizar detalhes avançados e metadados da IA.</p>
+                  <p className="text-sm font-bold text-slateblue">Selecione um arquivo para ver detalhes, resumo e metadados.</p>
                 </div>
               )}
            </GlassCard>
@@ -396,7 +481,7 @@ export default function FilesPage() {
   );
 }
 
-function buildFolderMap(documents: DocumentRecord[]): Map<string, FolderNode> {
+function buildFolderMap(documents: DocumentRecord[], storedFolders: FolderRecord[]): Map<string, FolderNode> {
   const folders = new Map<string, FolderNode>();
 
   function ensureFolder(path: string): FolderNode {
@@ -425,6 +510,15 @@ function buildFolderMap(documents: DocumentRecord[]): Map<string, FolderNode> {
   }
 
   ensureFolder("");
+
+  for (const folder of storedFolders) {
+    const parts = folder.path.split("/").filter(Boolean);
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      ensureFolder(currentPath);
+    }
+  }
 
   for (const document of documents) {
     const parts = document.folder_path.split("/").filter(Boolean);
@@ -573,7 +667,7 @@ function FolderTree({
 function MetricCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
   return (
     <div className="metric-card !p-3 flex items-center gap-3">
-      <div className="w-8 h-8 rounded-lg bg-slate-800/70 shadow-inner flex items-center justify-center text-slateblue/60 shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-slate-800/70 shadow-inner flex items-center justify-center text-slateblue/60 shrink-0">
          {icon}
       </div>
       <div className="min-w-0">
@@ -638,6 +732,22 @@ function RefreshIcon() {
   return (
     <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  );
+}
+
+function FolderAddIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v12m6-6H6M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v1" />
+    </svg>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M12 4v9m0 0l-3-3m3 3l3-3" />
     </svg>
   );
 }

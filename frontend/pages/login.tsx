@@ -41,59 +41,55 @@ export default function LoginPage() {
 
       await router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha na autenticação.");
+      setError(mapAuthError(err));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden px-5 py-8 bg-porcelain">
-      <div className="login-grid mx-auto grid min-h-[calc(100vh-4rem)] max-w-7xl overflow-hidden rounded-[2.5rem] shadow-2xl">
-        <section className="relative flex flex-col justify-between bg-ink p-8 text-white md:p-12 overflow-hidden">
+    <main className="relative min-h-screen overflow-hidden px-4 py-4 md:px-6 md:py-6">
+      <div className="mx-auto grid min-h-[calc(100vh-2rem)] max-w-6xl overflow-hidden rounded-[1.75rem] border border-white/10 bg-[rgba(19,23,29,0.88)] shadow-2xl lg:grid-cols-[1.2fr_0.95fr]">
+        <section className="relative flex flex-col justify-between border-b border-white/10 bg-[rgba(22,27,35,0.92)] p-7 text-white md:p-10 lg:border-b-0 lg:border-r">
           <div className="relative z-10">
             <div className="flex items-center gap-3">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-amberline font-display text-xl font-bold text-ink shadow-lg">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl border border-white/10 bg-[rgba(126,178,214,0.16)] font-display text-xl font-bold text-white shadow-lg">
                 N
               </div>
               <div>
                 <p className="font-display text-2xl font-bold">Nexus</p>
-                <p className="text-xs uppercase tracking-[0.26em] text-white/50">Archive OS v1.0</p>
+                <p className="text-xs uppercase tracking-[0.16em] text-white/55">Archive OS v1.0</p>
               </div>
             </div>
 
-            <h1 className="mt-16 max-w-2xl font-display text-5xl font-bold leading-[0.95] md:text-7xl tracking-tighter">
+            <h1 className="mt-12 max-w-2xl font-display text-4xl font-bold leading-tight md:text-6xl">
               Uma memória operacional para seus documentos.
             </h1>
-            <p className="mt-8 max-w-xl text-lg leading-relaxed text-white/70">
-              Organize PDFs, extraia conhecimento, converse com sua base e encontre evidências em segundos com IA avançada.
+            <p className="mt-6 max-w-xl text-base leading-relaxed text-white/72 md:text-lg">
+              Organize PDFs, extraia conhecimento, converse com sua base e encontre evidências com menos atrito.
             </p>
           </div>
 
-          <div className="relative z-10 mt-12 grid gap-3 sm:grid-cols-3">
-            <LoginFeature value="PDF" label="Docling" />
-            <LoginFeature value="AI" label="DeepSeek" />
-            <LoginFeature value="RAG" label="Groq" />
+          <div className="relative z-10 mt-10 grid gap-3 sm:grid-cols-3">
+            <LoginFeature value="PDF" label="Biblioteca central" />
+            <LoginFeature value="IA" label="Respostas guiadas" />
+            <LoginFeature value="RAG" label="Busca contextual" />
           </div>
-
-          {/* Decorative Orbs inside the dark section */}
-          <div className="absolute right-[-10%] top-[20%] w-64 h-64 bg-amberline/20 rounded-full blur-[100px]" />
-          <div className="absolute left-[10%] bottom-[-5%] w-80 h-80 bg-slateblue/20 rounded-full blur-[100px]" />
         </section>
 
-        <section className="glass-panel flex items-center justify-center rounded-none p-6 md:p-12 relative">
+        <section className="glass-panel flex items-center justify-center rounded-none p-6 md:p-10 relative">
           <div className="w-full max-w-md relative z-10">
             <p className="eyebrow">Acesso Restrito</p>
-            <h2 className="mt-3 font-display text-4xl font-bold tracking-tight">
+            <h2 className="mt-3 font-display text-3xl font-bold tracking-tight md:text-4xl">
               {mode === "login" ? "Entrar no Nexus" : "Criar Nova Conta"}
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-slateblue font-medium">
-              Utilize suas credenciais para acessar o ambiente de análise vetorial.
+              Use seu e-mail e senha para acessar o ambiente privado.
             </p>
 
             {!isFirebaseConfigured && (
-              <div className="mt-6 rounded-2xl border border-amberline/40 bg-amberline/10 p-4 text-sm text-ink font-bold">
-                Atenção: Firebase não configurado no ambiente.
+              <div className="mt-6 rounded-2xl border border-[rgba(215,177,106,0.35)] bg-[rgba(215,177,106,0.12)] p-4 text-sm text-white">
+                O login ainda nao esta configurado neste ambiente. Revise as variaveis do Firebase antes de tentar entrar.
               </div>
             )}
 
@@ -117,7 +113,7 @@ export default function LoginPage() {
               />
               
               {error && (
-                <p className="rounded-2xl bg-red-50 p-4 text-xs font-bold text-red-700 border border-red-100">{error}</p>
+                <p className="rounded-2xl border border-[rgba(228,149,149,0.3)] bg-[rgba(228,149,149,0.12)] p-4 text-sm font-medium text-white">{error}</p>
               )}
               
               <Button
@@ -130,9 +126,9 @@ export default function LoginPage() {
               </Button>
             </form>
 
-            <div className="mt-8 pt-6 border-t border-white/40 flex justify-between items-center">
+            <div className="mt-8 flex items-center justify-between border-t border-white/10 pt-6">
               <button
-                className="text-xs font-bold text-slateblue hover:text-ink transition-colors uppercase tracking-widest"
+                className="text-xs font-bold text-slateblue hover:text-white transition-colors uppercase tracking-[0.08em]"
                 type="button"
                 onClick={() => setMode(mode === "login" ? "register" : "login")}
               >
@@ -148,9 +144,39 @@ export default function LoginPage() {
 
 function LoginFeature({ value, label }: { value: string; label: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm group hover:bg-white/10 transition-colors">
-      <p className="font-display text-3xl font-bold text-amberline">{value}</p>
-      <p className="mt-1 text-[0.6rem] uppercase tracking-[0.24em] text-white/50 font-bold">{label}</p>
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm transition-colors">
+      <p className="font-display text-3xl font-bold text-white">{value}</p>
+      <p className="mt-1 text-[0.68rem] uppercase tracking-[0.08em] text-white/60 font-bold">{label}</p>
     </div>
   );
+}
+
+function mapAuthError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Nao foi possivel concluir a autenticacao. Tente novamente.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  if (message.includes("invalid-credential") || message.includes("wrong-password") || message.includes("user-not-found")) {
+    return "Usuario ou senha incorretos. Revise os dados e tente novamente.";
+  }
+
+  if (message.includes("email-already-in-use")) {
+    return "Este e-mail ja esta em uso. Entre com a conta existente ou use outro endereco.";
+  }
+
+  if (message.includes("weak-password")) {
+    return "A senha precisa ter pelo menos 6 caracteres.";
+  }
+
+  if (message.includes("too-many-requests")) {
+    return "Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.";
+  }
+
+  if (message.includes("network")) {
+    return "Nao foi possivel conectar ao servico de login. Verifique sua conexao e tente novamente.";
+  }
+
+  return "Nao foi possivel concluir a autenticacao. Tente novamente em instantes.";
 }

@@ -94,6 +94,7 @@ class AuthenticatedUserContext:
     originals_dir: Path
     markdown_dir: Path
     manifest_path: Path
+    folders_path: Path
     memory_dir: Path
     collection_name: str
 
@@ -182,8 +183,20 @@ class AuthenticatedUserProfile(BaseModel):
     originals_dir: str
     markdown_dir: str
     manifest_path: str
+    folders_path: str
     memory_dir: str
     collection_name: str
+
+
+class FolderRecord(BaseModel):
+    path: str
+    name: str
+    created_at: str
+
+
+class FolderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    parent_path: str = Field(default="", max_length=240)
 
 
 class LookupIntent(BaseModel):
@@ -385,6 +398,53 @@ async def list_documents(
     records = read_manifest_records(current_user)
     visible_records = [hydrate_document_record(record) for record in records[-limit:]][::-1]
     return [DocumentRecord(**record) for record in visible_records]
+
+
+@app.get("/folders", response_model=list[FolderRecord])
+async def list_folders(
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> list[FolderRecord]:
+    return [FolderRecord(**folder) for folder in read_folder_records(current_user)]
+
+
+@app.post("/folders", response_model=FolderRecord)
+async def create_folder(
+    request: FolderCreateRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> FolderRecord:
+    ensure_user_storage(current_user)
+
+    parent_parts = sanitize_relative_folder(request.parent_path)
+    name_slug = safe_slug(request.name, "")
+    if not name_slug:
+        raise HTTPException(status_code=400, detail="Folder name is invalid.")
+
+    full_parts = [*parent_parts, name_slug[:60]]
+    if len(full_parts) > 5:
+        raise HTTPException(status_code=400, detail="Folder path is too deep.")
+
+    folder_path = "/".join(full_parts)
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="Folder path is invalid.")
+
+    originals_target = current_user.originals_dir.joinpath(*full_parts)
+    markdown_target = current_user.markdown_dir.joinpath(*full_parts)
+    originals_target.mkdir(parents=True, exist_ok=True)
+    markdown_target.mkdir(parents=True, exist_ok=True)
+
+    folders = read_folder_records(current_user)
+    existing = next((folder for folder in folders if str(folder.get("path") or "") == folder_path), None)
+    if existing is not None:
+        return FolderRecord(**existing)
+
+    folder_record = {
+        "path": folder_path,
+        "name": full_parts[-1],
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    folders.append(folder_record)
+    write_folder_records(current_user, folders)
+    return FolderRecord(**folder_record)
 
 
 @app.get("/documents/{document_id}/download")
@@ -646,6 +706,7 @@ def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContex
         originals_dir=user_dir / "originals",
         markdown_dir=user_dir / "markdown",
         manifest_path=user_dir / "manifest.jsonl",
+        folders_path=user_dir / "folders.json",
         memory_dir=user_dir / "memory",
         collection_name=collection_name_for_user(uid),
     )
@@ -661,6 +722,8 @@ def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
     ):
         directory.mkdir(parents=True, exist_ok=True)
     current_user.manifest_path.touch(exist_ok=True)
+    if not current_user.folders_path.exists():
+        current_user.folders_path.write_text("[]", encoding="utf-8")
 
 
 def read_json_object(path: Path) -> dict[str, Any] | None:
@@ -689,6 +752,7 @@ def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any
         "originals_dir": str(current_user.originals_dir),
         "markdown_dir": str(current_user.markdown_dir),
         "manifest_path": str(current_user.manifest_path),
+        "folders_path": str(current_user.folders_path),
         "memory_dir": str(current_user.memory_dir),
         "collection_name": current_user.collection_name,
     }
@@ -1175,6 +1239,43 @@ def read_manifest_records(current_user: AuthenticatedUserContext) -> list[dict[s
             except json.JSONDecodeError:
                 continue
     return records
+
+
+def read_folder_records(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
+    ensure_user_storage(current_user)
+    try:
+        payload = json.loads(current_user.folders_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = []
+
+    folders: list[dict[str, Any]] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            folder_path = "/".join(sanitize_relative_folder(str(item.get("path") or "")))
+            if not folder_path:
+                continue
+            folders.append(
+                {
+                    "path": folder_path,
+                    "name": safe_slug(str(item.get("name") or folder_path.split("/")[-1]), folder_path.split("/")[-1]),
+                    "created_at": str(item.get("created_at") or datetime.now(UTC).isoformat()),
+                }
+            )
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for folder in folders:
+        deduped[folder["path"]] = folder
+    return sorted(deduped.values(), key=lambda item: item["path"])
+
+
+def write_folder_records(current_user: AuthenticatedUserContext, folders: list[dict[str, Any]]) -> None:
+    ensure_user_storage(current_user)
+    current_user.folders_path.write_text(
+        json.dumps(folders, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:

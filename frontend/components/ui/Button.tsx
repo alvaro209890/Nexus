@@ -1,7 +1,7 @@
 import { ButtonHTMLAttributes, ReactNode } from "react";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary";
+  variant?: "primary" | "secondary" | "ghost";
   children: ReactNode;
   isLoading?: boolean;
 }
@@ -14,7 +14,8 @@ export function Button({
   disabled,
   ...props 
 }: ButtonProps) {
-  const baseClass = variant === "primary" ? "primary-button" : "secondary-button";
+  const baseClass =
+    variant === "primary" ? "primary-button" : variant === "secondary" ? "secondary-button" : "ghost-button";
   
   return (
     <button 

@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import {
   ChatSessionDetail,
@@ -11,7 +11,6 @@ import {
   sendChatMessage
 } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
-import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 
 type ChatReference = {
@@ -34,6 +33,7 @@ export default function ChatPage() {
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const [isContextOpen, setIsContextOpen] = useState(true);
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -190,6 +190,14 @@ export default function ChatPage() {
 
   const activeSession = sessions.find((session) => session.session_id === activeSessionId) ?? null;
 
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      const form = event.currentTarget.form;
+      form?.requestSubmit();
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -202,14 +210,15 @@ export default function ChatPage() {
         </div>
 
         <div className="flex gap-2.5">
-          <Button type="button" variant="secondary" isLoading={isCreatingSession} onClick={() => void handleCreateSession()}>
-            Novo chat
+          <Button type="button" variant="primary" isLoading={isCreatingSession} onClick={() => void handleCreateSession()}>
+            <PlusIcon />
+            Nova conversa
           </Button>
         </div>
       </header>
 
       {error && (
-        <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-xs font-semibold text-red-700">
+        <div className="rounded-lg border border-[rgba(228,149,149,0.3)] bg-[rgba(228,149,149,0.12)] p-3 text-sm font-medium text-white">
           {error}
         </div>
       )}
@@ -330,38 +339,52 @@ export default function ChatPage() {
             )}
           </div>
 
-          <form onSubmit={handleChat} className="border-t border-white/60 bg-white/40 p-4">
-            <div className="flex gap-2.5">
-              <Input
+          <form onSubmit={handleChat} className="border-t border-white/60 bg-white/5 p-4">
+            <div className="flex flex-col gap-3 md:flex-row">
+              <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                placeholder="Digite sua pergunta..."
-                className="!rounded-lg"
+                onKeyDown={handleComposerKeyDown}
+                placeholder="Ex.: resuma os contratos ativos, liste riscos do projeto, compare as clausulas de renovacao"
+                className="field min-h-[120px] resize-y !rounded-xl"
                 autoFocus
               />
               <Button type="submit" isLoading={isBusy} className="!rounded-lg px-4">
                 Enviar
               </Button>
             </div>
+            <p className="mt-2 text-xs text-slateblue/60">Enter envia a mensagem. Shift + Enter adiciona nova linha.</p>
           </form>
         </GlassCard>
 
         <GlassCard className="!p-0 overflow-hidden">
           <div className="border-b border-white/50 px-4 py-3">
-            <p className="eyebrow">Contexto e Referências</p>
-            <p className="mt-1.5 text-[0.7rem] text-slateblue">
-              Referências usadas na última resposta.
-            </p>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between text-left"
+              onClick={() => setIsContextOpen((current) => !current)}
+            >
+              <div>
+                <p className="eyebrow">Contexto e referencias</p>
+                <p className="mt-1.5 text-[0.7rem] text-slateblue">
+                  Referencias usadas na ultima resposta.
+                </p>
+              </div>
+              <span className={`transition-transform ${isContextOpen ? "rotate-180" : ""}`}>
+                <ChevronDownIcon />
+              </span>
+            </button>
           </div>
 
+          {isContextOpen && (
           <div className="max-h-[70vh] space-y-3 overflow-y-auto p-3">
             {references.length === 0 ? (
               <p className="px-1 text-[0.7rem] italic text-slateblue/55">
-                Referências aparecerão aqui quando a IA utilizar documentos.
+                As referencias aparecem aqui quando a IA usa documentos na resposta.
               </p>
             ) : (
               references.map((reference, index) => (
-                <div key={`${reference.document_id || "ref"}-${index}`} className="rounded-lg border border-white/40 bg-white/60 p-3 text-[0.7rem]">
+                <div key={`${reference.document_id || "ref"}-${index}`} className="rounded-lg border border-white/10 bg-[rgba(20,25,33,0.72)] p-3 text-[0.76rem]">
                   <p className="font-bold text-slateblue">
                     {reference.title || reference.suggested_name || "Documento referenciado"}
                   </p>
@@ -377,6 +400,7 @@ export default function ChatPage() {
               ))
             )}
           </div>
+          )}
         </GlassCard>
       </div>
     </div>
@@ -439,6 +463,22 @@ function ChatOrbIcon() {
   return (
     <svg className="h-8 w-8 text-slateblue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg className="h-4 w-4 text-slateblue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
     </svg>
   );
 }

@@ -12,11 +12,11 @@ export default function Layout({ children }: LayoutProps) {
   const { user, logout, authSyncing } = useAuth();
 
   const navItems = [
-    { label: "Dashboard", path: "/", icon: <DashboardIcon /> },
+    { label: "Início", path: "/", icon: <DashboardIcon /> },
     { label: "Documentos", path: "/documents", icon: <DocsIcon /> },
     { label: "Arquivos", path: "/files", icon: <FilesIcon /> },
-    { label: "Busca Semântica", path: "/search", icon: <SearchIcon /> },
-    { label: "IA Chat", path: "/chat", icon: <ChatIcon /> },
+    { label: "Busca", path: "/search", icon: <SearchIcon /> },
+    { label: "Chat", path: "/chat", icon: <ChatIcon /> },
   ];
 
   if (router.pathname === "/login") {
@@ -24,73 +24,77 @@ export default function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex min-h-screen">
-      {/* Sidebar */}
-      <aside className="w-60 glass-panel border-r border-white/40 flex flex-col fixed h-full z-20">
-        <div className="p-5">
-          <div className="flex items-center gap-2.5 mb-6">
-            <div className="w-7 h-7 bg-ink rounded-lg flex items-center justify-center shadow-lg">
-              <span className="text-amberline font-bold text-base">N</span>
+    <div className="page-shell">
+      <header className="nav-surface">
+        <div className="page-container">
+          <div className="mobile-stack md:flex md:items-center md:justify-between md:gap-6">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-[rgba(126,178,214,0.14)] text-sm font-bold text-white">
+                  N
+                </div>
+                <div>
+                  <h1 className="font-display text-lg font-bold tracking-tight">Nexus</h1>
+                  <p className="eyebrow !text-[0.55rem]">Archive OS</p>
+                </div>
+              </div>
+
+              <button
+                onClick={logout}
+                className="secondary-button !min-h-[2.4rem] !px-3 !py-2 text-xs md:hidden"
+              >
+                <LogoutIcon />
+                Sair
+              </button>
             </div>
-            <div>
-              <h1 className="font-bold text-base tracking-tight">NEXUS</h1>
-              <p className="eyebrow !text-[0.5rem]">Archive OS v1.0</p>
+
+            <div className="flex flex-col gap-3 md:flex-1 md:items-end">
+              <nav className="nav-list" aria-label="Navegação principal">
+                {navItems.map((item) => {
+                  const isActive = router.pathname === item.path;
+                  return (
+                    <Link
+                      key={item.path}
+                      href={item.path}
+                      aria-current={isActive ? "page" : undefined}
+                      className={`nav-pill ${isActive ? "nav-pill-active" : ""}`}
+                    >
+                      {React.cloneElement(item.icon as React.ReactElement, { className: "w-4 h-4" })}
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </nav>
+
+              <div className="hidden md:flex md:items-center md:gap-3">
+                <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-[rgba(26,31,39,0.72)] px-3 py-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[rgba(126,178,214,0.14)] text-xs font-bold uppercase text-white">
+                    {user?.email?.charAt(0) || "U"}
+                  </div>
+                  <div className="overflow-hidden">
+                    <p className="truncate text-xs font-bold">{user?.email || "Usuário"}</p>
+                    <p className="text-[0.68rem] text-slateblue/60">Sessão ativa</p>
+                  </div>
+                </div>
+                <button onClick={logout} className="secondary-button !min-h-[2.4rem] !px-3 !py-2 text-xs">
+                  <LogoutIcon />
+                  Sair
+                </button>
+              </div>
             </div>
           </div>
-
-          <nav className="space-y-0.5">
-            {navItems.map((item) => {
-              const isActive = router.pathname === item.path;
-              return (
-                <Link 
-                  key={item.path} 
-                  href={item.path}
-                  className={`nav-pill ${isActive ? "nav-pill-active" : ""}`}
-                >
-                  {React.cloneElement(item.icon as React.ReactElement, { className: "w-4 h-4" })}
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
         </div>
+      </header>
 
-        <div className="mt-auto p-4 border-t border-white/20">
-          <div className="flex items-center gap-2.5 mb-3 p-1">
-            <div className="w-7 h-7 rounded-full bg-slateblue/20 flex items-center justify-center border border-slateblue/30">
-              <span className="text-slateblue font-bold uppercase text-xs">{user?.email?.charAt(0) || "U"}</span>
-            </div>
-            <div className="overflow-hidden">
-              <p className="text-[0.7rem] font-bold truncate">{user?.email || "Usuário"}</p>
-              <p className="eyebrow !text-[0.45rem]">Operador Online</p>
-            </div>
-          </div>
-          <button 
-            onClick={logout}
-            className="w-full secondary-button !py-1.5 !px-3 text-[0.7rem] flex items-center justify-center gap-2"
-          >
-            <LogoutIcon />
-            Sair do Sistema
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 ml-60 p-5 md:p-6 min-h-screen relative">
-        <div className="max-w-4xl mx-auto relative z-10">
-          {children}
-        </div>
-        
-        {/* Decorative Orbs */}
-        <div className="orb orb-one opacity-30"></div>
-        <div className="orb orb-two opacity-20"></div>
+      <main className="page-container page-stack relative">
+        {children}
       </main>
 
       {/* Global Syncing Overlay */}
       {authSyncing && (
-        <div className="fixed inset-0 bg-porcelain/60 backdrop-blur-md z-[100] flex flex-col items-center justify-center">
-          <div className="w-16 h-16 border-4 border-ink border-t-amberline rounded-full animate-spin mb-4"></div>
-          <p className="eyebrow">Sincronizando Ambiente...</p>
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[rgba(19,23,29,0.78)] backdrop-blur-md">
+          <div className="mb-4 h-16 w-16 rounded-full border-4 border-white/15 border-t-[var(--accent)] animate-spin"></div>
+          <p className="eyebrow">Sincronizando ambiente...</p>
         </div>
       )}
     </div>
