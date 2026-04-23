@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
 import { createFolder, deleteDocument, DocumentRecord, downloadDocument, FolderRecord, listDocuments, listFolders } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
@@ -34,6 +35,7 @@ type FolderNode = {
 };
 
 export default function FilesPage() {
+  const router = useRouter();
   const { user, authProfile, getCurrentToken } = useAuth();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [folders, setFolders] = useState<FolderRecord[]>([]);
@@ -51,6 +53,7 @@ export default function FilesPage() {
   const [folderName, setFolderName] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [deletingDocId, setDeletingDocId] = useState("");
+  const appliedRouteSelectionRef = useRef(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -76,7 +79,7 @@ export default function FilesPage() {
     }
   }, [user, authProfile, loadData]);
 
-  function selectFolder(path: string) {
+  const selectFolder = useCallback((path: string) => {
     setCurrentPath(path);
     setSelectedDocId(null);
     setExpandedPaths((current) => {
@@ -87,7 +90,7 @@ export default function FilesPage() {
       }
       return next;
     });
-  }
+  }, []);
 
   function toggleFolder(path: string) {
     setExpandedPaths((current) => {
@@ -189,6 +192,36 @@ export default function FilesPage() {
   }, [documents, selectedDocId]);
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
+
+  useEffect(() => {
+    if (!router.isReady || loading || appliedRouteSelectionRef.current) {
+      return;
+    }
+
+    const requestedPath = typeof router.query.path === "string" ? router.query.path : "";
+    const requestedDocumentId = typeof router.query.document === "string" ? router.query.document : "";
+
+    if (!requestedPath && !requestedDocumentId) {
+      appliedRouteSelectionRef.current = true;
+      return;
+    }
+
+    const requestedDocument = requestedDocumentId
+      ? documents.find((document) => document.document_id === requestedDocumentId) || null
+      : null;
+    const nextPath = requestedPath || requestedDocument?.folder_path || "";
+
+    if (!nextPath || folderMap.has(nextPath)) {
+      selectFolder(nextPath);
+    }
+
+    if (requestedDocument) {
+      setSelectedDocId(requestedDocument.document_id);
+      setShowDetails(true);
+    }
+
+    appliedRouteSelectionRef.current = true;
+  }, [documents, folderMap, loading, router.isReady, router.query.document, router.query.path, selectFolder]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)] animate-fade-in -mx-4 -mt-4 px-4 pt-4 pb-4">

@@ -492,7 +492,7 @@ export default function ChatPage() {
                   onChange={(event) => setChatInput(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder="Pergunte sobre contratos, regras, resumos..."
-                  className="w-full bg-bg-surface-strong border border-border-strong rounded-2xl py-4 pl-5 pr-14 text-[0.95rem] text-primary placeholder-muted focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar shadow-inner"
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/90 py-4 pl-5 pr-14 text-[0.95rem] text-white placeholder:text-zinc-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_12px_30px_rgba(0,0,0,0.25)]"
                   rows={2}
                   autoFocus
                 />

@@ -88,6 +88,9 @@ manifest_lock = threading.Lock()
 active_processing_jobs: set[str] = set()
 active_processing_lock = threading.Lock()
 cancelled_processing_jobs: set[str] = set()
+embedding_model_lock = threading.Lock()
+chroma_client_lock = threading.Lock()
+vector_index_lock = threading.Lock()
 
 
 @dataclass
@@ -1554,10 +1557,6 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
     if record is None:
         raise RuntimeError(f"Queued document {document_id} no longer exists in the manifest.")
 
-    source_pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
-    if not source_pdf_path.exists() or not source_pdf_path.is_file():
-        raise RuntimeError(f"Queued document source is missing: {source_pdf_path}")
-
     started_at = str(record.get("processing_started_at") or datetime.now(UTC).isoformat())
     base_updates = {
         "processing_error": None,
@@ -1574,97 +1573,133 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
         },
     )
 
-    original_name = safe_filename(str(record.get("original_name") or source_pdf_path.name))
+    original_name = safe_filename(str(record.get("original_name") or "document.pdf"))
     file_hash = str(record.get("sha256") or "")
-    markdown_text = extract_pdf_markdown(source_pdf_path)
-    ensure_document_job_not_cancelled(current_user.uid, document_id)
-    if not markdown_text.strip():
-        raise RuntimeError("The uploaded PDF did not produce readable text.")
+    resumed_paths = find_resumable_document_artifacts(current_user, record)
 
-    update_manifest_record(
-        current_user,
-        document_id,
-        {
-            "processing_status": "classifying",
-            "processing_progress": 45,
-        },
-    )
+    if resumed_paths is not None:
+        pdf_path, markdown_path = resumed_paths
+        markdown_text = markdown_path.read_text(encoding="utf-8")
+        ai_result = ai_result_from_record(record)
+        file_plan = file_plan_from_record(record, current_user, pdf_path, markdown_path)
+        update_manifest_record(
+            current_user,
+            document_id,
+            {
+                "processing_status": "indexing",
+                "processing_progress": 72,
+                "pdf_path": str(pdf_path),
+                "markdown_path": str(markdown_path),
+            },
+        )
+    else:
+        source_pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
+        if not source_pdf_path.exists() or not source_pdf_path.is_file():
+            raise RuntimeError(f"Queued document source is missing: {source_pdf_path}")
 
-    try:
-        ai_result = analyze_document_with_groq(markdown_text, original_name)
-    except Exception as exc:
-        logger.warning("AI classification fallback for document_id=%s: %s", document_id, exc)
-        ai_result = fallback_document_analysis(markdown_text, original_name)
-    ensure_document_job_not_cancelled(current_user.uid, document_id)
+        markdown_text = extract_pdf_markdown(source_pdf_path)
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
+        if not markdown_text.strip():
+            raise RuntimeError("The uploaded PDF did not produce readable text.")
 
-    file_plan = build_file_plan(
-        current_user=current_user,
-        ai_result=ai_result,
-        original_name=original_name,
-        document_id=document_id,
-    )
-    pdf_path = ensure_unique_path(file_plan["pdf_path"])
-    markdown_path = ensure_unique_path(file_plan["markdown_path"])
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        update_manifest_record(
+            current_user,
+            document_id,
+            {
+                "processing_status": "classifying",
+                "processing_progress": 45,
+            },
+        )
 
-    update_manifest_record(
-        current_user,
-        document_id,
-        {
-            "classification": file_plan["classification"],
-            "document_type": file_plan["document_type"],
-            "domain": file_plan["domain"],
-            "suggested_name": file_plan["suggested_name"],
-            "title": file_plan["title"],
-            "folder_path": file_plan["folder_path"],
-            "year": file_plan["year"],
-            "project": file_plan["project"],
-            "processing_status": "indexing",
-            "processing_progress": 72,
-        },
-    )
+        try:
+            ai_result = analyze_document_with_groq(markdown_text, original_name)
+        except Exception as exc:
+            logger.warning("AI classification fallback for document_id=%s: %s", document_id, exc)
+            ai_result = fallback_document_analysis(markdown_text, original_name)
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
 
-    shutil.move(str(source_pdf_path), str(pdf_path))
-    markdown_path.write_text(markdown_text, encoding="utf-8")
-    ensure_document_job_not_cancelled(current_user.uid, document_id)
+        file_plan = build_file_plan(
+            current_user=current_user,
+            ai_result=ai_result,
+            original_name=original_name,
+            document_id=document_id,
+        )
+        pdf_path = ensure_unique_path(file_plan["pdf_path"])
+        markdown_path = ensure_unique_path(file_plan["markdown_path"])
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+
+        update_manifest_record(
+            current_user,
+            document_id,
+            {
+                "classification": file_plan["classification"],
+                "document_type": file_plan["document_type"],
+                "domain": file_plan["domain"],
+                "suggested_name": file_plan["suggested_name"],
+                "title": file_plan["title"],
+                "folder_path": file_plan["folder_path"],
+                "year": file_plan["year"],
+                "project": file_plan["project"],
+                "processing_status": "indexing",
+                "processing_progress": 72,
+            },
+        )
+
+        shutil.move(str(source_pdf_path), str(pdf_path))
+        markdown_path.write_text(markdown_text, encoding="utf-8")
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
 
     chunks = split_text(markdown_text)
     if not chunks:
         raise RuntimeError("The document could not be split into searchable chunks.")
 
-    embeddings = embed_texts(chunks)
-    collection = get_chroma_collection(current_user.collection_name)
-    chunk_ids = [f"{document_id}:{index}" for index in range(len(chunks))]
-    metadatas = [
-        build_chroma_metadata(
-            current_user=current_user,
-            document_id=document_id,
-            file_hash=file_hash,
-            chunk_index=index,
-            pdf_path=pdf_path,
-            markdown_path=markdown_path,
-            original_name=original_name,
-            suggested_name=file_plan["suggested_name"],
-            year=file_plan["year"],
-            ai_result=ai_result,
-        )
-        for index in range(len(chunks))
-    ]
-
-    try:
-        collection.delete(where={"document_id": document_id})
-    except Exception:
-        logger.debug("Chroma cleanup skipped for document_id=%s", document_id)
-
-    ensure_document_job_not_cancelled(current_user.uid, document_id)
-    collection.upsert(
-        ids=chunk_ids,
-        documents=chunks,
-        embeddings=embeddings,
-        metadatas=metadatas,
+    logger.info(
+        "Starting vector indexing for document_id=%s chunks=%s filename=%s",
+        document_id,
+        len(chunks),
+        original_name,
     )
-    ensure_document_job_not_cancelled(current_user.uid, document_id)
+    with vector_index_lock:
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
+        embeddings = embed_texts(chunks)
+        collection = get_chroma_collection(current_user.collection_name)
+        chunk_ids = [f"{document_id}:{index}" for index in range(len(chunks))]
+        metadatas = [
+            build_chroma_metadata(
+                current_user=current_user,
+                document_id=document_id,
+                file_hash=file_hash,
+                chunk_index=index,
+                pdf_path=pdf_path,
+                markdown_path=markdown_path,
+                original_name=original_name,
+                suggested_name=file_plan["suggested_name"],
+                year=file_plan["year"],
+                ai_result=ai_result,
+            )
+            for index in range(len(chunks))
+        ]
+
+        try:
+            collection.delete(where={"document_id": document_id})
+        except Exception:
+            logger.debug("Chroma cleanup skipped for document_id=%s", document_id)
+
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
+        collection.upsert(
+            ids=chunk_ids,
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+        ensure_document_job_not_cancelled(current_user.uid, document_id)
+    logger.info(
+        "Finished vector indexing for document_id=%s chunks=%s filename=%s",
+        document_id,
+        len(chunks),
+        original_name,
+    )
 
     final_record = build_document_record(
         document_id=document_id,
@@ -1703,7 +1738,8 @@ def list_recoverable_document_jobs() -> list[tuple[AuthenticatedUserContext, str
             status = str(hydrated.get("processing_status") or "ready")
             document_id = str(hydrated.get("document_id") or "").strip()
             if not document_id or status not in {"queued", "extracting", "classifying", "indexing"}:
-                continue
+                if status != "failed" or find_resumable_document_artifacts(current_user, hydrated) is None:
+                    continue
             jobs.append((current_user, document_id))
 
     return jobs
@@ -1732,6 +1768,70 @@ def build_user_context_from_storage(user_dir: Path) -> AuthenticatedUserContext 
         memory_dir=Path(str(payload.get("memory_dir") or user_dir / "memory")),
         collection_name=str(payload.get("collection_name") or collection_name_for_user(uid)),
     )
+
+
+def find_resumable_document_artifacts(
+    current_user: AuthenticatedUserContext,
+    record: dict[str, Any],
+) -> tuple[Path, Path] | None:
+    folder_parts = sanitize_relative_folder(str(record.get("folder_path") or ""))
+    suggested_stem = Path(str(record.get("suggested_name") or "")).stem
+    if not folder_parts or not suggested_stem:
+        return None
+
+    pdf_path = current_user.originals_dir.joinpath(*folder_parts, f"{suggested_stem}.pdf")
+    markdown_path = current_user.markdown_dir.joinpath(*folder_parts, f"{suggested_stem}.md")
+    if pdf_path.exists() and pdf_path.is_file() and markdown_path.exists() and markdown_path.is_file():
+        return pdf_path, markdown_path
+    return None
+
+
+def ai_result_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "classification": str(record.get("document_type") or record.get("classification") or "outro"),
+        "document_type": str(record.get("document_type") or record.get("classification") or "outro"),
+        "domain": str(record.get("domain") or "geral"),
+        "suggested_name": str(record.get("suggested_name") or record.get("original_name") or "document.pdf"),
+        "folder_path": str(record.get("folder_path") or ""),
+        "aliases": normalize_string_list(record.get("aliases")),
+        "entities": normalize_string_list(record.get("entities")),
+        "classification_confidence": record.get("classification_confidence"),
+        "folder_confidence": record.get("folder_confidence"),
+        "title_confidence": record.get("title_confidence"),
+        "review_status": str(record.get("review_status") or "auto_ok"),
+        "metadata": {
+            "title": str(record.get("title") or Path(str(record.get("original_name") or "document")).stem),
+            "author": record.get("author"),
+            "date": record.get("date"),
+            "project": record.get("project"),
+            "technologies": normalize_string_list(record.get("technologies")),
+            "tags": normalize_string_list(record.get("tags")),
+            "summary": str(record.get("summary") or ""),
+        },
+    }
+
+
+def file_plan_from_record(
+    record: dict[str, Any],
+    current_user: AuthenticatedUserContext,
+    pdf_path: Path,
+    markdown_path: Path,
+) -> dict[str, Any]:
+    folder_parts = sanitize_relative_folder(str(record.get("folder_path") or ""))
+    return {
+        "classification": str(record.get("document_type") or record.get("classification") or "outro"),
+        "document_type": str(record.get("document_type") or record.get("classification") or "outro"),
+        "domain": str(record.get("domain") or "geral"),
+        "title": str(record.get("title") or Path(str(record.get("original_name") or "document")).stem),
+        "year": str(record.get("year") or "sem-data"),
+        "project": record.get("project"),
+        "folder_path": str(record.get("folder_path") or ""),
+        "suggested_name": str(record.get("suggested_name") or pdf_path.with_suffix(".md").name),
+        "pdf_dir": current_user.originals_dir.joinpath(*folder_parts),
+        "markdown_dir": current_user.markdown_dir.joinpath(*folder_parts),
+        "pdf_path": pdf_path,
+        "markdown_path": markdown_path,
+    }
 
 
 @app.on_event("startup")
@@ -2158,9 +2258,11 @@ def split_text(text: str) -> list[str]:
 def get_embedding_model():
     global embedding_model
     if embedding_model is None:
-        from sentence_transformers import SentenceTransformer
+        with embedding_model_lock:
+            if embedding_model is None:
+                from sentence_transformers import SentenceTransformer
 
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+                embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     return embedding_model
 
 
@@ -2175,9 +2277,11 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def get_chroma_client():
     global chroma_client
     if chroma_client is None:
-        import chromadb
+        with chroma_client_lock:
+            if chroma_client is None:
+                import chromadb
 
-        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+                chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
     return chroma_client
 
 

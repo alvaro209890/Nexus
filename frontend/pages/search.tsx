@@ -1,11 +1,13 @@
-import { useState, FormEvent } from "react";
+import Link from "next/link";
+import { FormEvent, ReactNode, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { SearchResult, searchSemantic } from "../lib/api";
+import { downloadDocument, SearchResult, searchSemantic } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
 import { HighlightedText } from "../components/ui/HighlightedText";
+import { Dialog } from "../components/ui/Dialog";
 
 export default function SearchPage() {
   const { getCurrentToken } = useAuth();
@@ -13,6 +15,9 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
+  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const [downloadingId, setDownloadingId] = useState("");
 
   async function handleSearch(event: FormEvent) {
     event.preventDefault();
@@ -20,6 +25,8 @@ export default function SearchPage() {
 
     setIsBusy(true);
     setError("");
+    setDetailError("");
+    setSelectedResult(null);
     try {
       const token = await getCurrentToken();
       const searchResults = await searchSemantic(query.trim(), token);
@@ -28,6 +35,29 @@ export default function SearchPage() {
       setError(err instanceof Error ? err.message : "Falha na busca.");
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  function handleOpenDetails(result: SearchResult) {
+    setDetailError("");
+    setSelectedResult(result);
+  }
+
+  async function handleDownload(result: SearchResult) {
+    const fallbackName = resolveOriginalName(result) || "documento.pdf";
+
+    setDownloadingId(result.document_id);
+    setDetailError("");
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      await downloadDocument(result.document_id, token, fallbackName);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao baixar o arquivo.";
+      setDetailError(message);
+      setError(message);
+    } finally {
+      setDownloadingId("");
     }
   }
 
@@ -79,46 +109,58 @@ export default function SearchPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {results.map((res, index) => {
-            const resultClassification = readMetadataText(res.metadata, "document_type")
-              || readMetadataText(res.metadata, "classification")
-              || res.classification
-              || "";
-            const resultLabel = res.suggested_name || readMetadataText(res.metadata, "filename") || "Documento";
-            const resultPage = readMetadataText(res.metadata, "page") || "?";
-            const resultChunk = readMetadataText(res.metadata, "chunk_index") || String(index);
+            const resultClassification = resolveClassification(res);
+            const resultLabel = resolveDisplayName(res);
+            const resultPage = resolvePageLabel(res);
+            const resultChunk = resolveChunkLabel(res, index);
+            const resultFolderPath = resolveFolderPath(res);
 
             return (
-            <GlassCard key={index} className="result-card flex flex-col">
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="file-folder-icon !h-11 !w-11">
-                    <DocumentTypeIcon classification={resultClassification} />
+              <button
+                key={`${res.document_id}-${res.chunk_id}-${index}`}
+                type="button"
+                className="w-full rounded-[1.25rem] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                onClick={() => handleOpenDetails(res)}
+              >
+                <GlassCard className="result-card flex h-full flex-col">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="file-folder-icon !h-11 !w-11">
+                        <DocumentTypeIcon classification={resultClassification} />
+                      </div>
+                      <div className="min-w-0">
+                        <StatusChip label={resultLabel} variant="info" />
+                        <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
+                          {labelForClassification(resultClassification)}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="rounded-md border border-white/10 bg-[rgba(20,25,33,0.72)] px-2 py-1 text-[0.68rem] font-bold text-slateblue">
+                      Score: {((res.score ?? 0) * 100).toFixed(1)}%
+                    </span>
                   </div>
-                  <div className="min-w-0">
-                    <StatusChip label={resultLabel} variant="info" />
-                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
-                      {labelForClassification(resultClassification)}
-                    </p>
+
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/45">
+                    {resultFolderPath ? `Arquivos / ${resultFolderPath}` : "Arquivos / Meu Disco"}
+                  </p>
+
+                  <p className="flex-1 text-sm italic leading-relaxed text-ink/80">
+                    &ldquo;
+                    <HighlightedText
+                      text={res.snippet.length > 300 ? `${res.snippet.substring(0, 300)}...` : res.snippet}
+                      query={query}
+                    />
+                    &rdquo;
+                  </p>
+
+                  <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
+                    <span>Página {resultPage}</span>
+                    <span>Referência: #{resultChunk}</span>
                   </div>
-                </div>
-                <span className="rounded-md border border-white/10 bg-[rgba(20,25,33,0.72)] px-2 py-1 text-[0.68rem] font-bold text-slateblue">
-                  Score: {((res.score ?? 0) * 100).toFixed(1)}%
-                </span>
-              </div>
-              <p className="flex-1 text-sm italic leading-relaxed text-ink/80">
-                &ldquo;
-                <HighlightedText
-                  text={res.snippet.length > 300 ? `${res.snippet.substring(0, 300)}...` : res.snippet}
-                  query={query}
-                />
-                &rdquo;
-              </p>
-              <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
-                <span>Página {resultPage}</span>
-                <span>Referência: #{resultChunk}</span>
-              </div>
-            </GlassCard>
-          )})}
+                </GlassCard>
+              </button>
+            );
+          })}
         </div>
         {results.length === 0 && !isBusy && query.trim() && !error && (
           <div className="rounded-lg border border-white/10 bg-[rgba(20,25,33,0.72)] p-4 text-sm text-slateblue/70">
@@ -126,6 +168,103 @@ export default function SearchPage() {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={Boolean(selectedResult)}
+        title={selectedResult ? resolveDisplayName(selectedResult) : "Detalhes do documento"}
+        description="Veja os detalhes do documento encontrado, o caminho em Arquivos e faça o download do PDF."
+        onClose={() => {
+          if (downloadingId) return;
+          setSelectedResult(null);
+          setDetailError("");
+        }}
+        footer={selectedResult ? (
+          <>
+            <Link href={buildFilesHref(selectedResult)} className="ghost-button">
+              Abrir em Arquivos
+            </Link>
+            <Button variant="ghost" type="button" onClick={() => setSelectedResult(null)} disabled={Boolean(downloadingId)}>
+              Fechar
+            </Button>
+            <Button
+              type="button"
+              isLoading={downloadingId === selectedResult.document_id}
+              onClick={() => void handleDownload(selectedResult)}
+            >
+              Baixar PDF
+            </Button>
+          </>
+        ) : undefined}
+      >
+        {selectedResult && (
+          <div className="space-y-5">
+            {detailError && (
+              <div className="rounded-lg border border-danger/30 bg-danger/10 p-3 text-sm font-medium text-white">
+                {detailError}
+              </div>
+            )}
+
+            <div className="flex items-start gap-4">
+              <div className="file-folder-icon !h-14 !w-14 shrink-0">
+                <DocumentTypeIcon classification={resolveClassification(selectedResult)} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-lg font-semibold leading-tight text-white break-words">
+                  {resolveDocumentTitle(selectedResult)}
+                </p>
+                <p className="mt-1 text-sm text-slateblue/75 break-all">
+                  {resolveOriginalName(selectedResult)}
+                </p>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
+                  {labelForClassification(resolveClassification(selectedResult))}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailField label="Score">
+                {((selectedResult.score ?? 0) * 100).toFixed(1)}%
+              </DetailField>
+              <DetailField label="Página">
+                {resolvePageLabel(selectedResult)}
+              </DetailField>
+              <DetailField label="Referência do trecho">
+                #{resolveChunkLabel(selectedResult)}
+              </DetailField>
+              <DetailField label="Documento ID">
+                <span className="break-all">{selectedResult.document_id}</span>
+              </DetailField>
+            </div>
+
+            <DetailField label="Caminho em Arquivos">
+              <span className="break-all">
+                {resolveFolderPath(selectedResult) ? `Arquivos / ${resolveFolderPath(selectedResult)}` : "Arquivos / Meu Disco"}
+              </span>
+            </DetailField>
+
+            <DetailField label="Caminho do PDF">
+              <span className="break-all">{selectedResult.pdf_path || "--"}</span>
+            </DetailField>
+
+            {selectedResult.markdown_path && (
+              <DetailField label="Caminho do Markdown">
+                <span className="break-all">{selectedResult.markdown_path}</span>
+              </DetailField>
+            )}
+
+            <DetailField label="Trecho encontrado">
+              <div className="rounded-xl border border-white/10 bg-[rgba(20,25,33,0.72)] p-4 text-sm italic leading-relaxed text-ink/80">
+                &ldquo;
+                <HighlightedText
+                  text={selectedResult.snippet}
+                  query={query}
+                />
+                &rdquo;
+              </div>
+            </DetailField>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }
@@ -136,6 +275,58 @@ function readMetadataText(metadata: SearchResult["metadata"], key: string): stri
   return String(value);
 }
 
+function resolveDisplayName(result: SearchResult): string {
+  return result.suggested_name
+    || readMetadataText(result.metadata, "suggested_name")
+    || readMetadataText(result.metadata, "original_name")
+    || "Documento";
+}
+
+function resolveDocumentTitle(result: SearchResult): string {
+  return readMetadataText(result.metadata, "title") || resolveDisplayName(result);
+}
+
+function resolveOriginalName(result: SearchResult): string {
+  return readMetadataText(result.metadata, "original_name") || resolveDisplayName(result);
+}
+
+function resolveClassification(result: SearchResult): string {
+  return readMetadataText(result.metadata, "document_type")
+    || readMetadataText(result.metadata, "classification")
+    || result.classification
+    || "";
+}
+
+function resolvePageLabel(result: SearchResult): string {
+  return readMetadataText(result.metadata, "page") || "?";
+}
+
+function resolveChunkLabel(result: SearchResult, fallbackIndex?: number): string {
+  const metadataChunk = readMetadataText(result.metadata, "chunk_index");
+  if (metadataChunk) return metadataChunk;
+
+  const chunkSuffix = result.chunk_id.split(":").pop()?.trim();
+  if (chunkSuffix) return chunkSuffix;
+
+  if (typeof fallbackIndex === "number") return String(fallbackIndex);
+  return "--";
+}
+
+function resolveFolderPath(result: SearchResult): string {
+  return readMetadataText(result.metadata, "folder_path");
+}
+
+function buildFilesHref(result: SearchResult): string {
+  const params = new URLSearchParams();
+  const folderPath = resolveFolderPath(result);
+
+  if (folderPath) params.set("path", folderPath);
+  if (result.document_id) params.set("document", result.document_id);
+
+  const query = params.toString();
+  return query ? `/files?${query}` : "/files";
+}
+
 function labelForClassification(classification: string): string {
   const value = classification.trim().toLowerCase();
   if (value.includes("contrat")) return "Contrato";
@@ -143,6 +334,19 @@ function labelForClassification(classification: string): string {
   if (value.includes("manual")) return "Manual";
   if (value.includes("termo")) return "Termo";
   return "Documento";
+}
+
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">
+        {label}
+      </p>
+      <div className="rounded-xl border border-white/10 bg-[rgba(20,25,33,0.72)] px-3 py-2 text-sm text-white/90">
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function DocumentTypeIcon({ classification }: { classification: string }) {
