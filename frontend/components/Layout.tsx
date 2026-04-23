@@ -1,8 +1,9 @@
-import React, { ReactNode } from "react";
+import React, { ReactNode, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
+import { LayoutDashboard, FileText, FolderTree, Search, MessageSquare, LogOut, Menu, X, User } from "lucide-react";
 
 interface LayoutProps {
   children: ReactNode;
@@ -11,13 +12,14 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const router = useRouter();
   const { user, logout, authSyncing } = useAuth();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navItems = [
-    { label: "Início", path: "/", icon: <DashboardIcon /> },
-    { label: "Documentos", path: "/documents", icon: <DocsIcon /> },
-    { label: "Arquivos", path: "/files", icon: <FilesIcon /> },
-    { label: "Busca", path: "/search", icon: <SearchIcon /> },
-    { label: "Chat", path: "/chat", icon: <ChatIcon /> },
+    { label: "Início", path: "/", icon: <LayoutDashboard size={18} /> },
+    { label: "Documentos", path: "/documents", icon: <FileText size={18} /> },
+    { label: "Arquivos", path: "/files", icon: <FolderTree size={18} /> },
+    { label: "Busca", path: "/search", icon: <Search size={18} /> },
+    { label: "Chat", path: "/chat", icon: <MessageSquare size={18} /> },
   ];
 
   if (router.pathname === "/login") {
@@ -27,75 +29,108 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="page-shell">
       <header className="nav-surface">
-        <div className="page-container">
-          <div className="mobile-stack md:flex md:items-center md:justify-between md:gap-6">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3 rounded-[1.25rem] border border-white/10 bg-white/5 px-3 py-2">
+        <div className="page-container flex items-center justify-between">
+          <div className="flex items-center gap-6">
+            {/* Logo */}
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-accent">
                 <Image
                   src="/nexus-icon.png"
                   alt="Nexus"
                   width={40}
                   height={40}
-                  className="rounded-xl border border-white/10 object-cover"
+                  className="rounded-xl object-cover"
                 />
-                <div>
-                  <h1 className="font-display text-lg font-bold tracking-tight text-white">Nexus</h1>
-                  <p className="eyebrow !text-[0.58rem]">Archive OS</p>
-                </div>
               </div>
-
-              <button
-                onClick={logout}
-                className="secondary-button !min-h-[2.4rem] !px-3 !py-2 text-xs md:hidden"
-              >
-                <LogoutIcon />
-                Sair
-              </button>
+              <div className="hidden md:block">
+                <h1 className="text-xl font-bold tracking-tight text-white m-0">Nexus</h1>
+              </div>
             </div>
 
-            <div className="flex flex-col gap-3 md:flex-1 md:items-end">
-              <nav className="nav-list" aria-label="Navegação principal">
-                {navItems.map((item) => {
-                  const isActive = router.pathname === item.path;
-                  return (
-                    <Link
-                      key={item.path}
-                      href={item.path}
-                      aria-current={isActive ? "page" : undefined}
-                      className={`nav-pill ${isActive ? "nav-pill-active" : ""}`}
-                    >
-                      {React.cloneElement(item.icon as React.ReactElement, { className: "w-4 h-4" })}
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </nav>
+            {/* Desktop Navigation */}
+            <nav className="hidden md:flex nav-list" aria-label="Navegação principal">
+              {navItems.map((item) => {
+                const isActive = router.pathname === item.path;
+                return (
+                  <Link
+                    key={item.path}
+                    href={item.path}
+                    aria-current={isActive ? "page" : undefined}
+                    className={`nav-pill ${isActive ? "nav-pill-active" : ""}`}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </nav>
+          </div>
 
-              <div className="hidden md:flex md:items-center md:gap-3">
-                <Image
-                  src="/nexus-logo.png"
-                  alt="Nexus Gestao de Dados"
-                  width={180}
-                  height={40}
-                  className="hidden h-10 w-auto object-contain xl:block"
-                />
-                <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-[rgba(26,31,39,0.72)] px-3 py-2">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[rgba(126,178,214,0.14)] text-xs font-bold uppercase text-white">
-                    {user?.email?.charAt(0) || "U"}
-                  </div>
-                  <div className="overflow-hidden">
-                    <p className="truncate text-xs font-bold">{user?.email || "Usuário"}</p>
-                    <p className="text-[0.68rem] text-slateblue/60">Sessão ativa</p>
-                  </div>
+          {/* User Profile & Actions */}
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-3 rounded-full bg-surface-strong px-4 py-1.5 border border-border-soft">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-soft text-xs font-bold uppercase text-accent">
+                {user?.email?.charAt(0) || "U"}
+              </div>
+              <div className="overflow-hidden">
+                <p className="truncate text-sm font-medium m-0">{user?.email || "Usuário"}</p>
+              </div>
+            </div>
+            
+            <button 
+              onClick={logout} 
+              className="hidden md:flex ghost-button text-muted hover:text-danger hover:bg-danger/10"
+              title="Sair da conta"
+            >
+              <LogOut size={18} />
+              <span className="sr-only">Sair</span>
+            </button>
+
+            {/* Mobile Menu Toggle */}
+            <button 
+              className="md:hidden ghost-button px-2"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            >
+              {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Navigation Dropdown */}
+        {mobileMenuOpen && (
+          <div className="md:hidden absolute top-full left-0 right-0 bg-surface-strong border-b border-border-soft shadow-panel backdrop-blur-xl animate-slide-up">
+            <nav className="flex flex-col p-4 gap-2">
+              {navItems.map((item) => {
+                const isActive = router.pathname === item.path;
+                return (
+                  <Link
+                    key={item.path}
+                    href={item.path}
+                    className={`flex items-center gap-3 p-3 rounded-lg font-medium ${isActive ? "bg-accent-soft text-primary" : "text-secondary hover:bg-white/5"}`}
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </Link>
+                );
+              })}
+              <div className="h-px bg-border-soft my-2" />
+              <div className="flex items-center justify-between p-3 rounded-lg text-secondary">
+                <div className="flex items-center gap-3 truncate">
+                  <User size={18} />
+                  <span className="truncate">{user?.email || "Usuário"}</span>
                 </div>
-                <button onClick={logout} className="secondary-button !min-h-[2.4rem] !px-3 !py-2 text-xs">
-                  <LogoutIcon />
+                <button 
+                  onClick={logout} 
+                  className="flex items-center gap-2 text-danger hover:bg-danger/10 px-3 py-1.5 rounded-md"
+                >
+                  <LogOut size={16} />
                   Sair
                 </button>
               </div>
-            </div>
+            </nav>
           </div>
-        </div>
+        )}
       </header>
 
       <main className="page-container page-stack relative">
@@ -104,62 +139,15 @@ export default function Layout({ children }: LayoutProps) {
 
       {/* Global Syncing Overlay */}
       {authSyncing && (
-        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[rgba(19,23,29,0.78)] backdrop-blur-md">
-          <div className="relative mb-4 flex h-16 w-16 items-center justify-center">
-            <div className="absolute inset-0 rounded-full border-4 border-white/15 border-t-[var(--accent)] animate-spin"></div>
-            <Image src="/nexus-icon.png" alt="" width={40} height={40} className="rounded-xl object-cover" />
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
+            <div className="absolute inset-0 rounded-full border-4 border-white/10 border-t-accent animate-spin"></div>
+            <Image src="/nexus-icon.png" alt="" width={48} height={48} className="rounded-xl object-cover" />
           </div>
-          <p className="eyebrow">Sincronizando ambiente...</p>
+          <p className="eyebrow text-primary">Sincronizando ambiente...</p>
         </div>
       )}
     </div>
   );
 }
 
-function DashboardIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-    </svg>
-  );
-}
-
-function DocsIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-    </svg>
-  );
-}
-
-function FilesIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-    </svg>
-  );
-}
-
-function ChatIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-    </svg>
-  );
-}
-
-function LogoutIcon() {
-  return (
-    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-    </svg>
-  );
-}

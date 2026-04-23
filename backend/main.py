@@ -157,6 +157,8 @@ class DocumentRecord(BaseModel):
     sha256: str
     original_name: str
     classification: str
+    document_type: str | None = None
+    domain: str | None = None
     suggested_name: str
     title: str
     author: str | None = None
@@ -166,7 +168,13 @@ class DocumentRecord(BaseModel):
     summary: str = ""
     folder_path: str = ""
     tags: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
     project: str | None = None
+    classification_confidence: float | None = None
+    folder_confidence: float | None = None
+    title_confidence: float | None = None
+    review_status: str | None = None
     pdf_path: str
     markdown_path: str
     chunks_indexed: int
@@ -494,6 +502,7 @@ async def chat(
     references: list[SearchResult] = []
     if should_search_documents:
         search_query = build_contextual_search_query(request.message, persistent_history)
+        recent_references = recent_turn_reference_results(persistent_history)
         lookup_references = lookup_specific_documents_with_groq(
             current_user=current_user,
             user_message=search_query,
@@ -505,7 +514,7 @@ async def chat(
             limit=min(request.limit * 2, 20),
         )
         references = merge_search_results(
-            [lookup_references, semantic_references],
+            [recent_references, lookup_references, semantic_references],
             limit=request.limit,
             dedupe_by_document=True,
         )
@@ -1004,6 +1013,14 @@ def analyze_document_with_deepseek(markdown_text: str, original_name: str) -> di
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
             "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
+            "domain": "high-level business domain like financeiro, juridico, rh, operacoes, produto, comercial, tecnologia, or geral",
+            "aliases": ["alternative file names, common short labels, synonyms users might search"],
+            "entities": ["important entities such as client, project, contract code, product or area"],
+            "confidence": {
+                "classification": "float 0..1",
+                "folder": "float 0..1",
+                "title": "float 0..1"
+            },
             "metadata": {
                 "title": "string",
                 "author": "string or null",
@@ -1062,6 +1079,14 @@ def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[s
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
             "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
+            "domain": "high-level business domain like financeiro, juridico, rh, operacoes, produto, comercial, tecnologia, or geral",
+            "aliases": ["alternative file names, common short labels, synonyms users might search"],
+            "entities": ["important entities such as client, project, contract code, product or area"],
+            "confidence": {
+                "classification": "float 0..1",
+                "folder": "float 0..1",
+                "title": "float 0..1"
+            },
             "metadata": {
                 "title": "string",
                 "author": "string or null",
@@ -1100,18 +1125,62 @@ def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str,
     technologies = metadata.get("technologies")
     if not isinstance(technologies, list):
         technologies = []
+    confidence = parsed.get("confidence") if isinstance(parsed.get("confidence"), dict) else {}
+    title = str(metadata.get("title") or Path(original_name).stem).strip() or Path(original_name).stem
+    project = str(metadata.get("project") or "").strip() or None
+    tags = normalize_string_list(metadata.get("tags"))
+    aliases = build_document_aliases(
+        original_name=original_name,
+        suggested_name=str(parsed.get("suggested_name") or original_name),
+        title=title,
+        project=project,
+        aliases=normalize_string_list(parsed.get("aliases")),
+        tags=tags,
+    )
+    domain = infer_document_domain(
+        raw_domain=str(parsed.get("domain") or ""),
+        project=project,
+        technologies=[str(item) for item in technologies if str(item).strip()],
+        folder_path=str(parsed.get("folder_path") or ""),
+    )
+    document_type = str(parsed.get("classification") or "outro")
+    classification_confidence = clamp_confidence(
+        confidence.get("classification"),
+        0.74 if document_type and document_type != "outro" else 0.48,
+    )
+    title_confidence = clamp_confidence(confidence.get("title"), 0.82 if title and title != Path(original_name).stem else 0.58)
+    folder_confidence = clamp_confidence(confidence.get("folder"), 0.76 if domain != "geral" or project else 0.52)
 
     return {
-        "classification": str(parsed.get("classification") or "outro"),
+        "classification": document_type,
+        "document_type": document_type,
+        "domain": domain,
         "suggested_name": str(parsed.get("suggested_name") or original_name),
         "folder_path": str(parsed.get("folder_path") or ""),
+        "aliases": aliases,
+        "entities": build_entities(
+            normalize_string_list(parsed.get("entities")),
+            project=project,
+            title=title,
+            tags=tags,
+        ),
+        "classification_confidence": classification_confidence,
+        "folder_confidence": folder_confidence,
+        "title_confidence": title_confidence,
+        "review_status": derive_review_status(
+            classification=document_type,
+            domain=domain,
+            classification_confidence=classification_confidence,
+            folder_confidence=folder_confidence,
+            title_confidence=title_confidence,
+        ),
         "metadata": {
-            "title": metadata.get("title") or Path(original_name).stem,
+            "title": title,
             "author": metadata.get("author"),
             "date": metadata.get("date"),
-            "project": metadata.get("project"),
+            "project": project,
             "technologies": [str(item) for item in technologies if str(item).strip()],
-            "tags": normalize_string_list(metadata.get("tags")),
+            "tags": tags,
             "summary": metadata.get("summary") or "",
         },
     }
@@ -1124,8 +1193,10 @@ def build_file_plan(
     document_id: str,
 ) -> dict[str, Any]:
     metadata = ai_result.get("metadata", {})
-    classification = safe_slug(str(ai_result.get("classification") or "outro"), "outro")
+    classification = safe_slug(str(ai_result.get("document_type") or ai_result.get("classification") or "outro"), "outro")
+    domain = safe_slug(str(ai_result.get("domain") or "geral"), "geral")
     title = str(metadata.get("title") or Path(original_name).stem)
+    project = safe_slug(str(metadata.get("project") or ""), "")
     year = extract_year(str(metadata.get("date") or "")) or extract_year(
         str(ai_result.get("suggested_name") or "")
     )
@@ -1140,15 +1211,18 @@ def build_file_plan(
     base_name = f"{year}__{classification}__{normalized_stem}__{short_id}"
     suggested_name = f"{base_name}.md"
 
-    folder_parts = resolve_folder_parts(ai_result, classification, year)
+    folder_parts = resolve_folder_parts(ai_result, domain, project, classification, year)
     relative_folder = "/".join(folder_parts)
     pdf_dir = current_user.originals_dir.joinpath(*folder_parts)
     markdown_dir = current_user.markdown_dir.joinpath(*folder_parts)
 
     return {
         "classification": classification,
+        "document_type": classification,
+        "domain": domain,
         "title": title,
         "year": year,
+        "project": project or None,
         "folder_path": relative_folder,
         "suggested_name": suggested_name,
         "pdf_dir": pdf_dir,
@@ -1163,18 +1237,23 @@ def extract_year(value: str) -> str | None:
     return match.group(0) if match else None
 
 
-def resolve_folder_parts(ai_result: dict[str, Any], classification: str, year: str) -> list[str]:
-    metadata = ai_result.get("metadata", {})
-    requested_path = str(ai_result.get("folder_path") or "")
-    parts = sanitize_relative_folder(requested_path)
-    if parts:
-        return parts
-
-    project = safe_slug(str(metadata.get("project") or ""), "")
-    technologies = normalize_string_list(metadata.get("technologies"))
-    area = safe_slug(technologies[0], "") if technologies else ""
-    fallback_parts = [part for part in [area, project, year, classification] if part]
-    return fallback_parts or [classification, year]
+def resolve_folder_parts(
+    ai_result: dict[str, Any],
+    domain: str,
+    project: str,
+    classification: str,
+    year: str,
+) -> list[str]:
+    requested_path = sanitize_relative_folder(str(ai_result.get("folder_path") or ""))
+    requested_domain = requested_path[0] if len(requested_path) >= 1 else ""
+    requested_project = requested_path[1] if len(requested_path) >= 2 else ""
+    resolved_domain = safe_slug(domain or requested_domain or "geral", "geral")
+    resolved_project = safe_slug(project or requested_project, "")
+    parts = [resolved_domain]
+    if resolved_project and resolved_project != resolved_domain:
+        parts.append(resolved_project)
+    parts.extend([year, classification])
+    return parts[:4]
 
 
 def sanitize_relative_folder(value: str) -> list[str]:
@@ -1193,6 +1272,104 @@ def normalize_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def dedupe_text_list(values: list[str], *, limit: int = 12) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(cleaned) < 2:
+            continue
+        normalized = normalize_search_text(cleaned)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(cleaned[:160])
+        if len(output) >= limit:
+            break
+    return output
+
+
+def clamp_confidence(value: Any, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(0.0, min(parsed, 1.0))
+
+
+def build_document_aliases(
+    *,
+    original_name: str,
+    suggested_name: str,
+    title: str,
+    project: str | None,
+    aliases: list[str],
+    tags: list[str],
+) -> list[str]:
+    original_stem = Path(original_name).stem
+    suggested_stem = Path(suggested_name).stem
+    values = [
+        title,
+        original_name,
+        original_stem,
+        suggested_name,
+        suggested_stem,
+        project or "",
+        *aliases,
+        *tags[:4],
+    ]
+    return dedupe_text_list(values, limit=14)
+
+
+def infer_document_domain(
+    *,
+    raw_domain: str,
+    project: str | None,
+    technologies: list[str],
+    folder_path: str,
+) -> str:
+    requested = safe_slug(raw_domain, "")
+    if requested:
+        return requested
+
+    project_slug = safe_slug(project or "", "")
+    if project_slug:
+        return project_slug
+
+    for item in technologies:
+        tech_slug = safe_slug(item, "")
+        if tech_slug:
+            return tech_slug
+
+    folder_parts = sanitize_relative_folder(folder_path)
+    if folder_parts:
+        return folder_parts[0]
+    return "geral"
+
+
+def build_entities(values: list[str], *, project: str | None, title: str, tags: list[str]) -> list[str]:
+    entity_candidates = [*values, project or "", *tags[:4]]
+    title_tokens = [part for part in re.split(r"[\s,;:/()\-]+", title) if len(part.strip()) >= 4][:4]
+    entity_candidates.extend(title_tokens)
+    return dedupe_text_list(entity_candidates, limit=10)
+
+
+def derive_review_status(
+    *,
+    classification: str,
+    domain: str,
+    classification_confidence: float,
+    folder_confidence: float,
+    title_confidence: float,
+) -> str:
+    low_scores = [score for score in (classification_confidence, folder_confidence, title_confidence) if score < 0.58]
+    if low_scores:
+        return "needs_review"
+    if classification == "outro" and domain == "geral":
+        return "needs_review"
+    return "auto_ok"
 
 
 def ensure_unique_path(path: Path) -> Path:
@@ -1225,6 +1402,8 @@ def build_document_record(
         "sha256": file_hash,
         "original_name": original_name,
         "classification": file_plan["classification"],
+        "document_type": file_plan["document_type"],
+        "domain": file_plan["domain"],
         "suggested_name": file_plan["suggested_name"],
         "title": str(metadata.get("title") or file_plan["title"]),
         "author": metadata.get("author"),
@@ -1232,8 +1411,14 @@ def build_document_record(
         "year": file_plan["year"],
         "technologies": [str(item) for item in technologies if str(item).strip()],
         "tags": normalize_string_list(metadata.get("tags")),
+        "aliases": dedupe_text_list([str(item) for item in ai_result.get("aliases") or []], limit=14),
+        "entities": dedupe_text_list([str(item) for item in ai_result.get("entities") or []], limit=10),
         "project": metadata.get("project"),
         "summary": str(metadata.get("summary") or ""),
+        "classification_confidence": ai_result.get("classification_confidence"),
+        "folder_confidence": ai_result.get("folder_confidence"),
+        "title_confidence": ai_result.get("title_confidence"),
+        "review_status": str(ai_result.get("review_status") or "auto_ok"),
         "folder_path": file_plan["folder_path"],
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
@@ -1304,6 +1489,69 @@ def write_folder_records(current_user: AuthenticatedUserContext, folders: list[d
 
 def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
     hydrated = dict(record)
+    document_type = safe_slug(
+        str(hydrated.get("document_type") or hydrated.get("classification") or "outro"),
+        "outro",
+    )
+    hydrated["classification"] = document_type
+    hydrated["document_type"] = document_type
+
+    technologies = normalize_string_list(hydrated.get("technologies"))
+    tags = normalize_string_list(hydrated.get("tags"))
+    project = str(hydrated.get("project") or "").strip() or None
+    title = str(hydrated.get("title") or Path(str(hydrated.get("original_name") or "document")).stem).strip()
+    suggested_name = str(hydrated.get("suggested_name") or hydrated.get("original_name") or title)
+    domain = infer_document_domain(
+        raw_domain=str(hydrated.get("domain") or ""),
+        project=project,
+        technologies=technologies,
+        folder_path=str(hydrated.get("folder_path") or ""),
+    )
+    aliases = hydrated.get("aliases")
+    entities = hydrated.get("entities")
+    hydrated["technologies"] = technologies
+    hydrated["tags"] = tags
+    hydrated["project"] = project
+    hydrated["title"] = title
+    hydrated["suggested_name"] = suggested_name
+    hydrated["domain"] = domain
+    hydrated["aliases"] = dedupe_text_list(
+        [str(item) for item in aliases] if isinstance(aliases, list) else build_document_aliases(
+            original_name=str(hydrated.get("original_name") or "document.pdf"),
+            suggested_name=suggested_name,
+            title=title,
+            project=project,
+            aliases=[],
+            tags=tags,
+        ),
+        limit=14,
+    )
+    hydrated["entities"] = dedupe_text_list(
+        [str(item) for item in entities] if isinstance(entities, list) else [],
+        limit=10,
+    )
+    hydrated["classification_confidence"] = clamp_confidence(
+        hydrated.get("classification_confidence"),
+        0.72 if document_type != "outro" else 0.48,
+    )
+    hydrated["folder_confidence"] = clamp_confidence(
+        hydrated.get("folder_confidence"),
+        0.75 if domain != "geral" or project else 0.52,
+    )
+    hydrated["title_confidence"] = clamp_confidence(
+        hydrated.get("title_confidence"),
+        0.82 if title and title != Path(str(hydrated.get("original_name") or "document")).stem else 0.58,
+    )
+    hydrated["review_status"] = str(
+        hydrated.get("review_status")
+        or derive_review_status(
+            classification=document_type,
+            domain=domain,
+            classification_confidence=float(hydrated["classification_confidence"]),
+            folder_confidence=float(hydrated["folder_confidence"]),
+            title_confidence=float(hydrated["title_confidence"]),
+        )
+    )
     if hydrated.get("size_bytes") is None:
         pdf_path_value = str(hydrated.get("pdf_path") or "").strip()
         if pdf_path_value:
@@ -1316,7 +1564,7 @@ def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
 def find_document_by_hash(current_user: AuthenticatedUserContext, file_hash: str) -> dict[str, Any] | None:
     for record in reversed(read_manifest_records(current_user)):
         if record.get("sha256") == file_hash:
-            return record
+            return hydrate_document_record(record)
     return None
 
 
@@ -1326,7 +1574,7 @@ def find_document_by_id(current_user: AuthenticatedUserContext, document_id: str
         return None
     for record in reversed(read_manifest_records(current_user)):
         if str(record.get("document_id") or "").strip() == clean_id:
-            return record
+            return hydrate_document_record(record)
     return None
 
 
@@ -1334,10 +1582,26 @@ def fallback_document_analysis(markdown_text: str, original_name: str) -> dict[s
     title = first_heading(markdown_text) or Path(original_name).stem
     year_match = re.search(r"\b(19|20)\d{2}\b", markdown_text[:3000])
     year = year_match.group(0) if year_match else "0000"
+    aliases = build_document_aliases(
+        original_name=original_name,
+        suggested_name=f"[{year}] Documento - {title}.md",
+        title=title,
+        project=None,
+        aliases=[],
+        tags=[],
+    )
     return {
         "classification": "outro",
+        "document_type": "outro",
+        "domain": "geral",
         "suggested_name": f"[{year}] Documento - {title}.md",
         "folder_path": "",
+        "aliases": aliases,
+        "entities": dedupe_text_list(re.findall(r"\b[A-Z][A-Za-z0-9_-]{3,}\b", markdown_text[:1500]), limit=8),
+        "classification_confidence": 0.42,
+        "folder_confidence": 0.4,
+        "title_confidence": 0.62 if title and title != Path(original_name).stem else 0.5,
+        "review_status": "needs_review",
         "metadata": {
             "title": title,
             "author": None,
@@ -1438,7 +1702,9 @@ def build_chroma_metadata(
         "sha256": file_hash,
         "chunk_index": chunk_index,
         "original_name": original_name,
-        "classification": str(ai_result.get("classification") or "outro"),
+        "classification": str(ai_result.get("document_type") or ai_result.get("classification") or "outro"),
+        "document_type": str(ai_result.get("document_type") or ai_result.get("classification") or "outro"),
+        "domain": str(ai_result.get("domain") or "geral"),
         "suggested_name": suggested_name,
         "title": str(metadata.get("title") or Path(original_name).stem),
         "author": str(metadata.get("author") or ""),
@@ -1446,8 +1712,11 @@ def build_chroma_metadata(
         "year": year,
         "technologies": json.dumps(technologies, ensure_ascii=False),
         "tags": json.dumps(normalize_string_list(metadata.get("tags")), ensure_ascii=False),
+        "aliases": json.dumps(ai_result.get("aliases") or [], ensure_ascii=False),
+        "entities": json.dumps(ai_result.get("entities") or [], ensure_ascii=False),
         "project": str(metadata.get("project") or ""),
         "summary": str(metadata.get("summary") or ""),
+        "review_status": str(ai_result.get("review_status") or "auto_ok"),
         "folder_path": "/".join(markdown_path.relative_to(current_user.markdown_dir).parts[:-1]),
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
@@ -1455,19 +1724,25 @@ def build_chroma_metadata(
 
 
 def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
+    hydrated = hydrate_document_record(record)
     return {
-        "document_id": str(record.get("document_id") or ""),
-        "title": str(record.get("title") or ""),
-        "original_name": str(record.get("original_name") or ""),
-        "suggested_name": str(record.get("suggested_name") or ""),
-        "classification": str(record.get("classification") or ""),
-        "year": str(record.get("year") or ""),
-        "project": str(record.get("project") or ""),
-        "folder_path": str(record.get("folder_path") or ""),
-        "tags": json.dumps(record.get("tags") or [], ensure_ascii=False),
-        "summary": str(record.get("summary") or ""),
-        "markdown_path": str(record.get("markdown_path") or ""),
-        "pdf_path": str(record.get("pdf_path") or ""),
+        "document_id": str(hydrated.get("document_id") or ""),
+        "title": str(hydrated.get("title") or ""),
+        "original_name": str(hydrated.get("original_name") or ""),
+        "suggested_name": str(hydrated.get("suggested_name") or ""),
+        "classification": str(hydrated.get("classification") or ""),
+        "document_type": str(hydrated.get("document_type") or ""),
+        "domain": str(hydrated.get("domain") or ""),
+        "year": str(hydrated.get("year") or ""),
+        "project": str(hydrated.get("project") or ""),
+        "folder_path": str(hydrated.get("folder_path") or ""),
+        "tags": json.dumps(hydrated.get("tags") or [], ensure_ascii=False),
+        "aliases": json.dumps(hydrated.get("aliases") or [], ensure_ascii=False),
+        "entities": json.dumps(hydrated.get("entities") or [], ensure_ascii=False),
+        "review_status": str(hydrated.get("review_status") or ""),
+        "summary": str(hydrated.get("summary") or ""),
+        "markdown_path": str(hydrated.get("markdown_path") or ""),
+        "pdf_path": str(hydrated.get("pdf_path") or ""),
     }
 
 
@@ -1492,7 +1767,7 @@ def metadata_search(
     limit: int = 5,
     lookup_intent: LookupIntent | None = None,
 ) -> list[SearchResult]:
-    records = read_manifest_records(current_user)
+    records = [hydrate_document_record(record) for record in read_manifest_records(current_user)]
     if not records:
         return []
 
@@ -1512,30 +1787,40 @@ def metadata_search(
         title = normalize_search_text(str(record.get("title") or ""))
         original_name = normalize_search_text(str(record.get("original_name") or ""))
         suggested_name = normalize_search_text(str(record.get("suggested_name") or ""))
+        aliases = normalize_search_text(" ".join(str(item) for item in record.get("aliases") or []))
+        entities = normalize_search_text(" ".join(str(item) for item in record.get("entities") or []))
         project = normalize_search_text(str(record.get("project") or ""))
+        domain = normalize_search_text(str(record.get("domain") or ""))
         folder_path = normalize_search_text(str(record.get("folder_path") or ""))
-        classification = normalize_search_text(str(record.get("classification") or ""))
+        classification = normalize_search_text(str(record.get("document_type") or record.get("classification") or ""))
         year = str(record.get("year") or "").strip()
         tags = " ".join(str(item) for item in record.get("tags") or [])
         tags_normalized = normalize_search_text(tags)
         summary = normalize_search_text(str(record.get("summary") or ""))
+        review_status = str(record.get("review_status") or "")
 
         score = 0.0
         for term in normalized_terms:
             if term and term in original_name:
-                score += 5.0
+                score += 5.2
+            if term and term in aliases:
+                score += 4.9
             if term and term in suggested_name:
                 score += 4.5
             if term and term in title:
                 score += 4.0
             if term and term in project:
-                score += 2.5
+                score += 2.8
+            if term and term in domain:
+                score += 2.7
             if term and term in folder_path:
-                score += 2.0
+                score += 2.2
+            if term and term in entities:
+                score += 2.1
             if term and term in tags_normalized:
                 score += 1.8
             if term and term in classification:
-                score += 1.5
+                score += 1.9
             if term and term in summary:
                 score += 1.0
 
@@ -1548,12 +1833,17 @@ def metadata_search(
                 score += 3.0
             if lookup_intent.project:
                 requested_project = normalize_search_text(lookup_intent.project)
-                if requested_project and requested_project in project:
+                if requested_project and (requested_project in project or requested_project in domain):
                     score += 2.5
             if lookup_intent.folder_hint:
                 requested_folder = normalize_search_text(lookup_intent.folder_hint)
                 if requested_folder and requested_folder in folder_path:
                     score += 2.0
+
+        if review_status == "auto_ok":
+            score += 0.2
+        elif review_status == "needs_review":
+            score -= 0.15
 
         if score > 0:
             results.append((score, record))
@@ -1790,6 +2080,17 @@ def should_use_document_context(
         "isso",
         "esse",
         "essa",
+        "desse",
+        "dessa",
+        "desse-arquivo",
+        "desse-documento",
+        "desse-pdf",
+        "dele",
+        "dela",
+        "nele",
+        "nela",
+        "sobre-ele",
+        "sobre-ela",
         "estes",
         "estas",
         "ele",
@@ -1807,6 +2108,10 @@ def should_use_document_context(
         "resumir",
         "compare",
         "comparar",
+        "conteudo",
+        "fala",
+        "diz",
+        "trecho",
     }
     archive_phrases = (
         "no-meu-acervo",
@@ -1841,6 +2146,58 @@ def last_turn_has_references(persistent_history: list[dict[str, Any]]) -> bool:
     return False
 
 
+def recent_turn_reference_results(persistent_history: list[dict[str, Any]], limit: int = 3) -> list[SearchResult]:
+    output: list[SearchResult] = []
+    seen_documents: set[str] = set()
+    for turn in reversed(persistent_history[-4:]):
+        focus_document = turn.get("focus_document")
+        if isinstance(focus_document, dict):
+            focus_result = search_result_from_saved_reference(focus_document, score=1.25)
+            if focus_result and focus_result.document_id not in seen_documents:
+                seen_documents.add(focus_result.document_id)
+                output.append(focus_result)
+                if len(output) >= limit:
+                    return output
+        references = turn.get("references")
+        if not isinstance(references, list) or not references:
+            continue
+        for reference in references:
+            result = search_result_from_saved_reference(reference, score=1.0)
+            if result is None or result.document_id in seen_documents:
+                continue
+            seen_documents.add(result.document_id)
+            output.append(result)
+            if len(output) >= limit:
+                return output
+    return output
+
+
+def search_result_from_saved_reference(reference: dict[str, Any], *, score: float) -> SearchResult | None:
+    if not isinstance(reference, dict):
+        return None
+    document_id = str(reference.get("document_id") or "").strip()
+    if not document_id:
+        return None
+    return SearchResult(
+        document_id=document_id,
+        chunk_id=f"recent-{document_id}",
+        score=score,
+        snippet="",
+        metadata={
+            "title": reference.get("title") or reference.get("suggested_name") or "",
+            "original_name": reference.get("original_name") or "",
+            "classification": reference.get("classification") or "",
+            "document_type": reference.get("document_type") or reference.get("classification") or "",
+            "domain": reference.get("domain") or "",
+            "aliases": json.dumps(reference.get("aliases") or [], ensure_ascii=False),
+        },
+        markdown_path=reference.get("markdown_path"),
+        pdf_path=reference.get("pdf_path"),
+        classification=reference.get("document_type") or reference.get("classification"),
+        suggested_name=reference.get("suggested_name"),
+    )
+
+
 def build_contextual_search_query(user_message: str, persistent_history: list[dict[str, Any]]) -> str:
     clean_message = re.sub(r"\s+", " ", user_message).strip()
     if not clean_message:
@@ -1852,10 +2209,21 @@ def build_contextual_search_query(user_message: str, persistent_history: list[di
 
     prior_user_messages: list[str] = []
     referenced_titles: list[str] = []
+    focus_labels: list[str] = []
     for turn in reversed(persistent_history[-4:]):
         user_text = re.sub(r"\s+", " ", str(turn.get("user") or "")).strip()
         if user_text:
             prior_user_messages.append(user_text[:240])
+        focus_document = turn.get("focus_document")
+        if isinstance(focus_document, dict):
+            focus_label = str(
+                focus_document.get("title")
+                or focus_document.get("suggested_name")
+                or focus_document.get("original_name")
+                or ""
+            ).strip()
+            if focus_label and focus_label not in focus_labels:
+                focus_labels.append(focus_label[:160])
         references = turn.get("references")
         if isinstance(references, list):
             for reference in references[:3]:
@@ -1865,7 +2233,7 @@ def build_contextual_search_query(user_message: str, persistent_history: list[di
                 if title and title not in referenced_titles:
                     referenced_titles.append(title[:160])
 
-    additions = prior_user_messages[:2] + referenced_titles[:3]
+    additions = focus_labels[:2] + prior_user_messages[:2] + referenced_titles[:3]
     if not additions:
         return clean_message
     return f"{clean_message}\nContexto recente para busca: " + " | ".join(additions)
@@ -1879,6 +2247,12 @@ def contains_follow_up_reference(user_message: str) -> bool:
             "isso",
             "esse",
             "essa",
+            "desse",
+            "dessa",
+            "dele",
+            "dela",
+            "nele",
+            "nela",
             "anterior",
             "acima",
             "continue",
@@ -1886,6 +2260,9 @@ def contains_follow_up_reference(user_message: str) -> bool:
             "detalhe",
             "explique",
             "resuma",
+            "fala",
+            "conteudo",
+            "diz",
         )
     )
 
@@ -1905,20 +2282,24 @@ def build_rag_context(current_user: AuthenticatedUserContext, references: list[S
     for index, reference in enumerate(references, start=1):
         title = reference.metadata.get("title") or reference.suggested_name or reference.document_id
         original_name = reference.metadata.get("original_name") or reference.suggested_name or ""
-        classification = reference.classification or reference.metadata.get("classification") or ""
+        classification = reference.metadata.get("document_type") or reference.classification or reference.metadata.get("classification") or ""
+        domain = reference.metadata.get("domain") or ""
         year = reference.metadata.get("year") or ""
         score = f"{reference.score:.3f}" if isinstance(reference.score, float) else "metadata"
         markdown_path = reference.markdown_path
         source_text = reference.snippet
         if markdown_path:
             source_text = read_relevant_markdown(current_user, Path(markdown_path), reference.snippet)
+        aliases = parse_reference_aliases(reference)
         blocks.append(
             "\n".join(
                 [
                     f"[Fonte {index}] {title}",
                     f"Arquivo: {original_name}",
-                    f"Classificacao: {classification}",
+                    f"Tipo: {classification}",
+                    f"Dominio: {domain}",
                     f"Ano: {year}",
+                    f"Aliases: {' | '.join(aliases[:4])}" if aliases else "Aliases: -",
                     f"Score: {score}",
                     f"Trecho relevante:\n{source_text[:4000]}",
                 ]
@@ -1980,10 +2361,16 @@ def build_chat_messages(
         "DeepSeek organizes incoming files, while you help reason, locate the right document and answer quickly. "
         "Do not search or imply that you searched user files unless document context was supplied. "
         "For general questions, answer directly from reasoning and persistent memory. "
-        "For document questions, use only supplied context when citing documents; if it is insufficient, say what is missing. "
+        "For document questions, use only supplied context when citing documents; if context was supplied, treat it as actual file content or extracted excerpts available to you. "
+        "Never say that you cannot access the file content when the context contains document excerpts or recovered markdown text. "
+        "If the supplied context is insufficient, say exactly what is missing. "
+        "When a document is clearly the current focus, keep answering about that same document until the user switches context. "
+        "For file lookup requests, identify the best candidate first. For content requests, answer what the document says. "
+        "When there are multiple plausible documents, say that briefly and ask for clarification instead of pretending one is certain. "
         "Before answering, identify the user's intent, separate facts from assumptions, and choose the shortest useful structure. "
         "When the task is complex, provide a direct answer first and then a small set of next steps or tradeoffs. "
         "When comparing or summarizing documents, synthesize across sources instead of copying long excerpts. "
+        "For document answers, prefer: direct answer, then 1-3 short evidence bullets or cited facts from the supplied context. "
         "Prefer concise, actionable answers, ask a clarifying question when the request is ambiguous, and never invent references. "
         "Answer in the user's language and use persistent session memory to preserve user preferences and prior conclusions."
     )
@@ -1992,6 +2379,10 @@ def build_chat_messages(
     memory_summary = build_memory_summary(persistent_history)
     if memory_summary:
         messages.append({"role": "system", "content": f"Persistent session memory:\n{memory_summary}"})
+
+    focus_document = get_current_focus_document(persistent_history)
+    if focus_document:
+        messages.append({"role": "system", "content": f"Current document in focus:\n{focus_document}"})
 
     for item in request.history[-10:]:
         messages.append({"role": item.role, "content": item.content})
@@ -2214,6 +2605,7 @@ def parse_persisted_messages(path: Path) -> list[dict[str, Any]]:
                         "content": str(payload["content"]),
                         "timestamp": timestamp,
                         "references": payload.get("references") if isinstance(payload.get("references"), list) else [],
+                        "focus_document": payload.get("focus_document") if isinstance(payload.get("focus_document"), dict) else None,
                     }
                 )
                 continue
@@ -2221,6 +2613,7 @@ def parse_persisted_messages(path: Path) -> list[dict[str, Any]]:
             user_content = str(payload.get("user") or "").strip()
             assistant_content = str(payload.get("assistant") or "").strip()
             references = payload.get("references") if isinstance(payload.get("references"), list) else []
+            focus_document = payload.get("focus_document") if isinstance(payload.get("focus_document"), dict) else None
             if user_content:
                 messages.append(
                     {
@@ -2237,6 +2630,7 @@ def parse_persisted_messages(path: Path) -> list[dict[str, Any]]:
                         "content": assistant_content,
                         "timestamp": timestamp,
                         "references": references,
+                        "focus_document": focus_document,
                     }
                 )
     return messages
@@ -2285,6 +2679,7 @@ def load_session_memory(
                     "user": pending_user,
                     "assistant": str(message.get("content") or ""),
                     "references": message.get("references") if isinstance(message.get("references"), list) else [],
+                    "focus_document": message.get("focus_document") if isinstance(message.get("focus_document"), dict) else None,
                 }
             )
             pending_user = ""
@@ -2302,14 +2697,19 @@ def save_session_turn(
     ensure_user_storage(current_user)
     clean_session_id = safe_session_id(session_id)
     now = datetime.now(UTC).isoformat()
+    focus_reference = choose_focus_reference(user_message, references, persistent_history=load_session_memory(current_user, clean_session_id))
     serialized_references = [
         {
             "document_id": reference.document_id,
             "title": reference.metadata.get("title") or reference.suggested_name,
+            "original_name": reference.metadata.get("original_name") or "",
             "markdown_path": reference.markdown_path,
             "pdf_path": reference.pdf_path,
             "classification": reference.classification,
+            "document_type": reference.metadata.get("document_type") or reference.classification,
+            "domain": reference.metadata.get("domain") or "",
             "suggested_name": reference.suggested_name,
+            "aliases": parse_reference_aliases(reference),
         }
         for reference in references
     ]
@@ -2334,6 +2734,7 @@ def save_session_turn(
                     "content": assistant_message,
                     "timestamp": now,
                     "references": serialized_references,
+                    "focus_document": focus_reference,
                 },
                 ensure_ascii=False,
             )
@@ -2358,10 +2759,13 @@ def build_memory_summary(turns: list[dict[str, Any]]) -> str:
         user_message = str(turn.get("user") or "")[:500]
         assistant_message = str(turn.get("assistant") or "")[:700]
         reference_summary = summarize_turn_references(turn)
+        focus_summary = summarize_focus_document(turn)
         if user_message or assistant_message:
             block = f"User: {user_message}\nAssistant: {assistant_message}"
             if reference_summary:
                 block += f"\nReferences used: {reference_summary}"
+            if focus_summary:
+                block += f"\nCurrent focus: {focus_summary}"
             snippets.append(block)
     return "\n\n".join(snippets)
 
@@ -2378,3 +2782,83 @@ def summarize_turn_references(turn: dict[str, Any]) -> str:
         if label:
             labels.append(label[:140])
     return " | ".join(labels)
+
+
+def summarize_focus_document(turn: dict[str, Any]) -> str:
+    focus_document = turn.get("focus_document")
+    if not isinstance(focus_document, dict):
+        return ""
+    return str(
+        focus_document.get("title")
+        or focus_document.get("suggested_name")
+        or focus_document.get("original_name")
+        or focus_document.get("document_id")
+        or ""
+    ).strip()[:180]
+
+
+def get_current_focus_document(turns: list[dict[str, Any]]) -> str:
+    for turn in reversed(turns[-4:]):
+        summary = summarize_focus_document(turn)
+        if summary:
+            return summary
+    return ""
+
+
+def parse_reference_aliases(reference: SearchResult) -> list[str]:
+    aliases = reference.metadata.get("aliases")
+    if isinstance(aliases, list):
+        return dedupe_text_list([str(item) for item in aliases], limit=8)
+    if isinstance(aliases, str):
+        try:
+            parsed = json.loads(aliases)
+        except json.JSONDecodeError:
+            parsed = []
+        if isinstance(parsed, list):
+            return dedupe_text_list([str(item) for item in parsed], limit=8)
+    return []
+
+
+def choose_focus_reference(
+    user_message: str,
+    references: list[SearchResult],
+    *,
+    persistent_history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not references:
+        return None
+
+    search_terms = tokenize_search_terms(user_message)
+    prior_focus_label = get_current_focus_document(persistent_history)
+    best_score = float("-inf")
+    best_reference = references[0]
+    for index, reference in enumerate(references):
+        candidates = [
+            str(reference.metadata.get("title") or ""),
+            str(reference.metadata.get("original_name") or ""),
+            str(reference.suggested_name or ""),
+            *parse_reference_aliases(reference),
+        ]
+        normalized = normalize_search_text(" ".join(candidates))
+        score = float(reference.score or 0) - (index * 0.05)
+        for term in search_terms:
+            if term and term in normalized:
+                score += 0.8
+        if prior_focus_label and normalize_search_text(prior_focus_label) in normalized:
+            score += 0.6
+        if score > best_score:
+            best_score = score
+            best_reference = reference
+
+    return {
+        "document_id": best_reference.document_id,
+        "title": best_reference.metadata.get("title") or best_reference.suggested_name,
+        "original_name": best_reference.metadata.get("original_name") or "",
+        "markdown_path": best_reference.markdown_path,
+        "pdf_path": best_reference.pdf_path,
+        "classification": best_reference.classification,
+        "document_type": best_reference.metadata.get("document_type") or best_reference.classification,
+        "domain": best_reference.metadata.get("domain") or "",
+        "suggested_name": best_reference.suggested_name,
+        "aliases": parse_reference_aliases(best_reference),
+    }

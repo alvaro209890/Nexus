@@ -8,16 +8,18 @@ interface BreadcrumbsProps {
   rootLabel?: string;
   currentValue: string;
   onSelect: (value: string) => void;
+  className?: string;
 }
 
 export function Breadcrumbs({
   items,
   rootLabel = "Raiz",
   currentValue,
-  onSelect
+  onSelect,
+  className = ""
 }: BreadcrumbsProps) {
   return (
-    <nav aria-label="Breadcrumb" className="breadcrumb-list">
+    <nav aria-label="Breadcrumb" className={`breadcrumb-list ${className}`.trim()}>
       <button
         type="button"
         onClick={() => onSelect("")}

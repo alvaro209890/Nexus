@@ -13,6 +13,18 @@ import {
 } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
+import { 
+  Plus, 
+  Trash2, 
+  Edit2, 
+  Send, 
+  ChevronDown, 
+  MessageSquare, 
+  User, 
+  Bot, 
+  Loader2, 
+  FileText 
+} from "lucide-react";
 
 type ChatReference = {
   document_id?: string;
@@ -20,6 +32,7 @@ type ChatReference = {
   classification?: string;
   suggested_name?: string;
   pdf_path?: string;
+  original_name?: string;
 };
 
 export default function ChatPage() {
@@ -241,58 +254,74 @@ export default function ChatPage() {
     }
   }
 
+  const formatDocName = (name: string) => {
+    let clean = name.replace(/_/g, ' ').replace(/\.pdf$/i, '');
+    clean = clean.replace(/\b\w/g, l => l.toUpperCase());
+    return clean;
+  };
+
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+    <div className="flex flex-col gap-6 animate-fade-in">
+      <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between mb-2">
         <div>
-          <p className="eyebrow mb-1.5">Workspace</p>
-          <h1 className="text-2xl font-bold tracking-tight">Chats com Memória Persistente</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slateblue">
-            Cada conversa mantém seu próprio contexto, histórico e memória local dentro do espaço privado do usuário autenticado.
+          <p className="eyebrow mb-1.5 text-accent-strong">Workspace</p>
+          <h1 className="text-3xl font-bold tracking-tight">Chat Inteligente</h1>
+          <p className="mt-2 max-w-3xl text-sm text-secondary">
+            Converse com seus dados de forma contextualizada. Cada sessão mantém sua própria memória e referências baseadas na indexação do Nexus.
           </p>
         </div>
 
         <div className="flex gap-2.5">
-          <Button type="button" variant="primary" isLoading={isCreatingSession} onClick={() => void handleCreateSession()}>
-            <PlusIcon />
-            Nova conversa
+          <Button type="button" isLoading={isCreatingSession} onClick={() => void handleCreateSession()}>
+            <Plus size={18} />
+            Novo Chat
           </Button>
         </div>
       </header>
 
       {error && (
-        <div className="rounded-lg border border-[rgba(228,149,149,0.3)] bg-[rgba(228,149,149,0.12)] p-3 text-sm font-medium text-white">
+        <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm font-medium text-danger animate-slide-up">
           {error}
         </div>
       )}
 
-      <div className="grid min-h-[calc(100vh-10rem)] grid-cols-1 gap-5 xl:grid-cols-[280px_minmax(0,1fr)_240px]">
-        <GlassCard className="!p-0 overflow-hidden">
-          <div className="border-b border-white/50 px-4 py-3">
-            <p className="eyebrow">Conversas</p>
-            <p className="mt-1.5 text-xs text-slateblue">
-              Chats salvos localmente no diretório privado do usuário.
+      <div className="grid h-[calc(100vh-14rem)] min-h-[500px] grid-cols-1 gap-6 xl:grid-cols-[300px_minmax(0,1fr)_280px]">
+        {/* Sidebar: Historico de chats */}
+        <GlassCard className="!p-0 flex flex-col overflow-hidden h-full">
+          <div className="border-b border-border-soft bg-bg-surface-strong/50 px-5 py-4 shrink-0">
+            <p className="font-bold text-primary flex items-center gap-2">
+              <MessageSquare size={16} className="text-accent" />
+              Histórico
             </p>
           </div>
 
-          <div className="max-h-[70vh] space-y-1.5 overflow-y-auto p-2">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {isLoadingSessions ? (
               Array.from({ length: 5 }).map((_, index) => (
-                <div key={`session-loading-${index}`} className="h-20 animate-pulse rounded-lg bg-slateblue/5" />
+                <div key={`session-loading-${index}`} className="h-20 animate-pulse rounded-xl bg-white/5" />
               ))
             ) : (
               sessions.map((session) => (
                 <div
                   key={session.session_id}
-                  className={`chat-session-card ${session.session_id === activeSessionId ? "chat-session-card-active" : ""}`}
+                  className={`chat-session-card p-3 rounded-xl transition-all cursor-pointer border ${
+                    session.session_id === activeSessionId 
+                      ? "bg-accent/10 border-accent/30 shadow-inner" 
+                      : "bg-transparent border-transparent hover:bg-white/5"
+                  }`}
+                  onClick={() => {
+                    if (editingSessionId !== session.session_id) {
+                      void loadChatSession(session.session_id);
+                    }
+                  }}
                 >
                   <div className="min-w-0 flex-1">
                     {editingSessionId === session.session_id ? (
-                      <div className="space-y-2">
+                      <div className="space-y-2" onClick={e => e.stopPropagation()}>
                         <input
                           value={editingTitle}
                           onChange={(event) => setEditingTitle(event.target.value)}
-                          className="chat-session-inline-edit"
+                          className="w-full bg-bg-surface border border-accent/50 rounded-md px-2 py-1 text-sm outline-none focus:border-accent text-primary"
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
@@ -307,7 +336,7 @@ export default function ChatPage() {
                         <div className="flex gap-2">
                           <Button
                             type="button"
-                            className="!min-h-[2.35rem] !px-3 !text-sm"
+                            className="!py-1 !px-2 !text-xs !rounded-md"
                             isLoading={isRenamingSession}
                             onClick={() => void submitRename(session.session_id)}
                           >
@@ -316,7 +345,7 @@ export default function ChatPage() {
                           <Button
                             type="button"
                             variant="ghost"
-                            className="!min-h-[2.35rem] !px-3 !text-sm"
+                            className="!py-1 !px-2 !text-xs !rounded-md"
                             onClick={cancelRenaming}
                             disabled={isRenamingSession}
                           >
@@ -325,43 +354,43 @@ export default function ChatPage() {
                         </div>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => void loadChatSession(session.session_id)}
-                      >
+                      <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
-                          <p className="truncate text-xs font-bold">{session.title}</p>
-                          <span className="chat-session-badge">{session.turn_count}</span>
+                          <p className={`truncate text-sm font-bold ${session.session_id === activeSessionId ? "text-accent-strong" : "text-primary"}`}>
+                            {session.title}
+                          </p>
+                          <span className="text-[0.6rem] bg-bg-surface-strong px-1.5 py-0.5 rounded-full text-secondary font-mono">{session.turn_count}</span>
                         </div>
-                        <p className="mt-1.5 line-clamp-2 text-[0.78rem] leading-relaxed text-slateblue/75">
-                          {session.last_message_preview || "Chat pronto para iniciar."}
+                        <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-secondary opacity-80">
+                          {session.last_message_preview || "Novo chat pronto..."}
                         </p>
-                        <p className="mt-2.5 text-[0.62rem] font-bold uppercase tracking-[0.2em] text-slateblue/45">
-                          Atualizado em {formatDateTime(session.updated_at)}
-                        </p>
-                      </button>
+                        <div className="mt-2 flex items-center justify-between">
+                          <p className="text-[0.65rem] font-medium uppercase tracking-wider text-muted">
+                            {formatDateTime(session.updated_at)}
+                          </p>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              className="p-1 rounded-md text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); startRenaming(session); }}
+                              disabled={isRenamingSession || isDeletingSession}
+                              aria-label="Renomear"
+                            >
+                              <Edit2 size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              className="p-1 rounded-md text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); void handleDeleteSession(session.session_id); }}
+                              disabled={isDeletingSession}
+                              aria-label="Excluir"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     )}
-                  </div>
-                  <div className="chat-session-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => startRenaming(session)}
-                      disabled={isRenamingSession || isDeletingSession}
-                      aria-label={`Renomear chat ${session.title}`}
-                    >
-                      <EditIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-session-delete"
-                      onClick={() => void handleDeleteSession(session.session_id)}
-                      disabled={isDeletingSession}
-                      aria-label={`Excluir chat ${session.title}`}
-                    >
-                      <TrashIcon />
-                    </button>
                   </div>
                 </div>
               ))
@@ -369,75 +398,79 @@ export default function ChatPage() {
           </div>
         </GlassCard>
 
-        <GlassCard className="flex flex-col overflow-hidden !p-0">
-          <div className="border-b border-white/50 px-4 py-3">
-            <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="eyebrow">Conversa Ativa</p>
-                <div className="mt-1 flex items-center gap-2">
-                  <h2 className="text-lg font-bold">{activeSession?.title || "Novo chat"}</h2>
-                  {activeSession && (
-                    <button
-                      type="button"
-                      className="icon-button !p-2"
-                      onClick={() => startRenaming(activeSession)}
-                      aria-label="Renomear conversa ativa"
-                    >
-                      <EditIcon />
-                    </button>
-                  )}
-                </div>
+        {/* Centro: Chat Area */}
+        <GlassCard className="flex flex-col overflow-hidden !p-0 h-full border-border-strong shadow-panel">
+          <div className="border-b border-border-soft bg-bg-surface-strong/80 backdrop-blur-md px-6 py-4 shrink-0 flex justify-between items-center z-10">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-primary">{activeSession?.title || "Novo chat"}</h2>
+                {activeSession && (
+                  <button
+                    type="button"
+                    className="p-1.5 text-muted hover:text-accent transition-colors"
+                    onClick={() => startRenaming(activeSession)}
+                  >
+                    <Edit2 size={14} />
+                  </button>
+                )}
               </div>
-              <div className="flex flex-wrap gap-2">
-                <span className="chat-session-meta">{messages.length} msg</span>
-                <span className="chat-session-meta">{references.length} ref</span>
-              </div>
+            </div>
+            <div className="flex gap-3 text-xs font-medium text-secondary bg-bg-surface px-3 py-1.5 rounded-full border border-border-soft">
+              <span>{messages.length} msgs</span>
+              <span className="w-px bg-border-soft" />
+              <span>{references.length} refs</span>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="flex-1 overflow-y-auto px-6 py-6 custom-scrollbar bg-gradient-to-b from-bg-surface/30 to-bg-surface-strong/30">
             {isLoadingConversation ? (
-              <div className="space-y-3">
-                {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={`message-loading-${index}`} className="h-16 animate-pulse rounded-lg bg-slateblue/5" />
+              <div className="space-y-6">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div key={`message-loading-${index}`} className={`flex ${index % 2 === 0 ? "justify-end" : "justify-start"}`}>
+                    <div className="h-16 w-2/3 animate-pulse rounded-2xl bg-white/5" />
+                  </div>
                 ))}
               </div>
             ) : messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center px-6 text-center opacity-50">
-                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slateblue/10">
-                  <ChatOrbIcon />
+              <div className="flex h-full flex-col items-center justify-center text-center px-4 animate-fade-in">
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-accent/10 border border-accent/20">
+                  <Bot size={32} className="text-accent" />
                 </div>
-                <p className="text-lg font-bold italic text-slateblue">Este chat ainda está vazio.</p>
-                <p className="mt-1.5 max-w-md text-xs text-slateblue/80">
-                  Inicie uma nova conversa. O histórico, a memória e as referências deste chat serão salvos localmente para este usuário.
+                <h3 className="text-xl font-bold text-primary mb-2">Como posso ajudar?</h3>
+                <p className="max-w-sm text-sm text-secondary leading-relaxed">
+                  Faça perguntas sobre seus documentos indexados. O Nexus vasculha sua base em segundos e gera respostas com referências exatas.
                 </p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 {messages.map((message, index) => (
                   <div key={`${message.timestamp}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`chat-bubble shadow-sm ${message.role === "user" ? "chat-user" : "chat-assistant"}`}>
-                      <div className="mb-1.5 flex items-center justify-between gap-3">
-                        <p className="text-[0.6rem] font-bold uppercase tracking-[0.18em] opacity-55">
-                          {message.role === "user" ? "Operador" : "Nexus IA"}
+                    <div className={`chat-bubble flex flex-col gap-2 max-w-[85%] ${message.role === "user" ? "chat-user" : "chat-assistant"}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`p-1 rounded-md ${message.role === "user" ? "bg-white/20 text-white" : "bg-accent/20 text-accent"}`}>
+                          {message.role === "user" ? <User size={12} /> : <Bot size={12} />}
+                        </div>
+                        <p className="text-[0.65rem] font-bold uppercase tracking-wider opacity-60">
+                          {message.role === "user" ? "Você" : "Nexus"}
                         </p>
-                        <p className="text-[0.6rem] font-semibold opacity-45">
+                        <span className="ml-auto text-[0.65rem] font-medium opacity-50">
                           {formatTime(message.timestamp)}
-                        </p>
+                        </span>
                       </div>
-                      <p className="whitespace-pre-wrap text-[0.825rem] leading-relaxed">{message.content}</p>
+                      <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                        {message.content}
+                      </div>
                     </div>
                   </div>
                 ))}
 
                 {isBusy && (
                   <div className="flex justify-start">
-                    <div className="chat-assistant chat-bubble shadow-sm animate-pulse">
-                      <div className="flex gap-1">
-                        <div className="h-1 w-1 animate-bounce rounded-full bg-slateblue/40" />
-                        <div className="h-1 w-1 animate-bounce rounded-full bg-slateblue/40 [animation-delay:0.2s]" />
-                        <div className="h-1 w-1 animate-bounce rounded-full bg-slateblue/40 [animation-delay:0.4s]" />
-                      </div>
+                    <div className="chat-bubble chat-assistant min-w-[80px]">
+                       <div className="flex items-center gap-2 opacity-70">
+                         <Loader2 size={16} className="animate-spin" />
+                         <span className="text-xs font-medium">Processando...</span>
+                       </div>
                     </div>
                   </div>
                 )}
@@ -446,64 +479,73 @@ export default function ChatPage() {
             )}
           </div>
 
-          <form onSubmit={handleChat} className="border-t border-white/60 bg-white/5 p-4">
-            <div className="flex flex-col gap-3 md:flex-row">
+          <form onSubmit={handleChat} className="bg-bg-surface-strong/90 backdrop-blur-md p-4 shrink-0 border-t border-border-soft">
+            <div className="relative">
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
                 onKeyDown={handleComposerKeyDown}
-                placeholder="Ex.: resuma os contratos ativos, liste riscos do projeto, compare as clausulas de renovacao"
-                className="field min-h-[120px] resize-y !rounded-xl"
+                placeholder="Pergunte algo sobre os documentos..."
+                className="w-full bg-bg-surface border border-border-strong rounded-2xl py-3 pl-4 pr-14 text-sm text-primary placeholder-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-all resize-none custom-scrollbar"
+                rows={2}
                 autoFocus
               />
-              <Button type="submit" isLoading={isBusy} className="!rounded-lg px-4">
-                {!isBusy && <SendIcon />}
-                Enviar
-              </Button>
+              <button 
+                type="submit" 
+                disabled={isBusy || !chatInput.trim()}
+                className="absolute right-2 bottom-2 p-2.5 rounded-xl bg-accent text-white hover:bg-accent-strong disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isBusy ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+              </button>
             </div>
-            <p className="mt-2 text-xs text-slateblue/60">Enter envia a mensagem. Shift + Enter adiciona nova linha.</p>
+            <p className="text-center mt-2 text-[0.65rem] text-muted font-medium">
+              A IA pode cometer erros. Considere verificar as referências citadas.
+            </p>
           </form>
         </GlassCard>
 
-        <GlassCard className="!p-0 overflow-hidden">
-          <div className="border-b border-white/50 px-4 py-3">
+        {/* Sidebar Direita: Referências */}
+        <GlassCard className="!p-0 flex flex-col overflow-hidden h-full hidden xl:flex">
+          <div className="border-b border-border-soft bg-bg-surface-strong/50 px-4 py-4 shrink-0">
             <button
               type="button"
-              className="flex w-full items-center justify-between text-left"
+              className="flex w-full items-center justify-between text-left group"
               onClick={() => setIsContextOpen((current) => !current)}
             >
               <div>
-                <p className="eyebrow">Contexto e referencias</p>
-                <p className="mt-1.5 text-[0.7rem] text-slateblue">
-                  Referencias usadas na ultima resposta.
+                <p className="font-bold text-primary flex items-center gap-2">
+                  <FileText size={16} className="text-accent" />
+                  Referências
+                </p>
+                <p className="mt-1 text-xs text-secondary opacity-80">
+                  Fontes da última resposta
                 </p>
               </div>
-              <span className={`transition-transform ${isContextOpen ? "rotate-180" : ""}`}>
-                <ChevronDownIcon />
-              </span>
+              <ChevronDown size={16} className={`text-muted group-hover:text-primary transition-transform ${isContextOpen ? "rotate-180" : ""}`} />
             </button>
           </div>
 
           {isContextOpen && (
-          <div className="max-h-[70vh] space-y-3 overflow-y-auto p-3">
+          <div className="flex-1 space-y-3 overflow-y-auto p-4 custom-scrollbar">
             {references.length === 0 ? (
-              <p className="px-1 text-[0.7rem] italic text-slateblue/55">
-                As referencias aparecem aqui quando a IA usa documentos na resposta.
-              </p>
+              <div className="flex flex-col items-center justify-center h-40 text-center opacity-50">
+                 <FileText size={24} className="mb-2 text-muted" />
+                 <p className="text-xs text-secondary leading-relaxed">
+                   As referências aparecerão aqui quando o Nexus consultar seus documentos.
+                 </p>
+              </div>
             ) : (
               references.map((reference, index) => (
-                <div key={`${reference.document_id || "ref"}-${index}`} className="rounded-lg border border-white/10 bg-[rgba(20,25,33,0.72)] p-3 text-[0.76rem]">
-                  <p className="font-bold text-slateblue">
-                    {reference.title || reference.suggested_name || "Documento referenciado"}
+                <div key={`${reference.document_id || "ref"}-${index}`} className="rounded-xl border border-border-soft bg-bg-surface-strong p-3 hover:border-accent/30 transition-colors group">
+                  <p className="text-xs font-bold text-primary mb-1 group-hover:text-accent transition-colors" title={reference.original_name || reference.title || reference.suggested_name}>
+                    {formatDocName(reference.title || reference.suggested_name || "Documento referenciado")}
                   </p>
-                  <p className="mt-1.5 text-ink/70">
-                    {reference.classification || "sem classificacao"}
-                  </p>
-                  {reference.document_id && (
-                    <p className="mt-2 text-[0.6rem] font-bold uppercase tracking-[0.18em] text-amber-700">
-                      ID {reference.document_id}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[0.65rem] font-bold px-1.5 py-0.5 rounded-md bg-white/5 text-secondary border border-white/10">
+                      {reference.classification || "PDF"}
+                    </span>
+                  </div>
+                  {/* UUIDs hidden intentionally for cleaner UI */}
                 </div>
               ))
             )}
@@ -538,7 +580,8 @@ function extractLatestReferences(messages: PersistedChatMessage[]): ChatReferenc
       title: typeof reference.title === "string" ? reference.title : undefined,
       classification: typeof reference.classification === "string" ? reference.classification : undefined,
       suggested_name: typeof reference.suggested_name === "string" ? reference.suggested_name : undefined,
-      pdf_path: typeof reference.pdf_path === "string" ? reference.pdf_path : undefined
+      pdf_path: typeof reference.pdf_path === "string" ? reference.pdf_path : undefined,
+      original_name: typeof reference.original_name === "string" ? reference.original_name : undefined,
     }));
   }
   return [];
@@ -557,53 +600,4 @@ function formatTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function TrashIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M4 7h16" />
-    </svg>
-  );
-}
-
-function ChatOrbIcon() {
-  return (
-    <svg className="h-8 w-8 text-slateblue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" />
-    </svg>
-  );
-}
-
-function EditIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4" />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M22 2L11 13" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M22 2L15 22l-4-9-9-4 20-7z" />
-    </svg>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg className="h-4 w-4 text-slateblue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-    </svg>
-  );
 }

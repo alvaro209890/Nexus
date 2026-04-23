@@ -78,17 +78,26 @@ export default function SearchPage() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {results.map((res, index) => (
+          {results.map((res, index) => {
+            const resultClassification = readMetadataText(res.metadata, "document_type")
+              || readMetadataText(res.metadata, "classification")
+              || res.classification
+              || "";
+            const resultLabel = res.suggested_name || readMetadataText(res.metadata, "filename") || "Documento";
+            const resultPage = readMetadataText(res.metadata, "page") || "?";
+            const resultChunk = readMetadataText(res.metadata, "chunk_index") || String(index);
+
+            return (
             <GlassCard key={index} className="result-card flex flex-col">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3">
                   <div className="file-folder-icon !h-11 !w-11">
-                    <DocumentTypeIcon classification={res.classification || res.metadata?.classification || ""} />
+                    <DocumentTypeIcon classification={resultClassification} />
                   </div>
                   <div className="min-w-0">
-                    <StatusChip label={res.suggested_name || res.metadata?.filename || "Documento"} variant="info" />
+                    <StatusChip label={resultLabel} variant="info" />
                     <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
-                      {labelForClassification(res.classification || res.metadata?.classification || "")}
+                      {labelForClassification(resultClassification)}
                     </p>
                   </div>
                 </div>
@@ -105,11 +114,11 @@ export default function SearchPage() {
                 &rdquo;
               </p>
               <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
-                <span>Página {res.metadata?.page || "?"}</span>
-                <span>Referência: #{res.metadata?.chunk_index || index}</span>
+                <span>Página {resultPage}</span>
+                <span>Referência: #{resultChunk}</span>
               </div>
             </GlassCard>
-          ))}
+          )})}
         </div>
         {results.length === 0 && !isBusy && query.trim() && !error && (
           <div className="rounded-lg border border-white/10 bg-[rgba(20,25,33,0.72)] p-4 text-sm text-slateblue/70">
@@ -119,6 +128,12 @@ export default function SearchPage() {
       </div>
     </div>
   );
+}
+
+function readMetadataText(metadata: SearchResult["metadata"], key: string): string {
+  const value = metadata?.[key];
+  if (value === null || value === undefined) return "";
+  return String(value);
 }
 
 function labelForClassification(classification: string): string {

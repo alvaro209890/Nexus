@@ -15,7 +15,7 @@ export type SearchResult = {
   chunk_id: string;
   score: number | null;
   snippet: string;
-  metadata: Record<string, string>;
+  metadata: Record<string, string | number | boolean | null>;
   markdown_path?: string | null;
   pdf_path?: string | null;
   classification?: string | null;
@@ -76,6 +76,8 @@ export type DocumentRecord = {
   sha256: string;
   original_name: string;
   classification: string;
+  document_type?: string | null;
+  domain?: string | null;
   suggested_name: string;
   title: string;
   author?: string | null;
@@ -85,7 +87,13 @@ export type DocumentRecord = {
   summary: string;
   folder_path: string;
   tags: string[];
+  aliases?: string[];
+  entities?: string[];
   project?: string | null;
+  classification_confidence?: number | null;
+  folder_confidence?: number | null;
+  title_confidence?: number | null;
+  review_status?: string | null;
   pdf_path: string;
   markdown_path: string;
   chunks_indexed: number;

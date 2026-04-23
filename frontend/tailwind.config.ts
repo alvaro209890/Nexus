@@ -10,14 +10,18 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#171b22",
-        amberline: "#7eb2d6",
-        slateblue: "#c7d0db",
-        porcelain: "#13171d",
-        moss: "#2d3540"
+        background: "var(--bg-base)",
+        surface: "var(--bg-surface)",
+        primary: "var(--text-primary)",
+        secondary: "var(--text-secondary)",
+        muted: "var(--text-muted)",
+        accent: "var(--accent)",
+        "accent-strong": "var(--accent-strong)",
+        "accent-soft": "var(--accent-soft)",
       },
       boxShadow: {
-        panel: "0 24px 80px rgba(16, 24, 32, 0.16)"
+        panel: "0 10px 40px -10px rgba(0,0,0,0.5)",
+        lift: "0 20px 40px -20px rgba(0,0,0,0.6)",
       },
       fontFamily: {
         display: ["var(--font-display)", "ui-sans-serif", "system-ui"],
