@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import uuid
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,9 @@ app = FastAPI(title="Nexus API", version="0.1.0")
 DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", "~/Downloads/BD_NEXUS")).expanduser()
 ORIGINALS_DIR = DOCUMENTS_DIR / "originals"
 MARKDOWN_DIR = DOCUMENTS_DIR / "markdown"
-for directory in (DOCUMENTS_DIR, ORIGINALS_DIR, MARKDOWN_DIR):
+MANIFEST_PATH = DOCUMENTS_DIR / "manifest.jsonl"
+MEMORY_DIR = DOCUMENTS_DIR / "memory"
+for directory in (DOCUMENTS_DIR, ORIGINALS_DIR, MARKDOWN_DIR, MEMORY_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -34,6 +38,7 @@ EMBEDDING_MODEL_NAME = os.getenv(
 MAX_GROQ_CHARS = int(os.getenv("MAX_GROQ_CHARS", "18000"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
+CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -69,6 +74,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     history: list[ChatMessage] = Field(default_factory=list)
     limit: int = Field(default=5, ge=1, le=10)
+    session_id: str = Field(default="default", min_length=1)
 
 
 class SearchResult(BaseModel):
@@ -81,6 +87,24 @@ class SearchResult(BaseModel):
     pdf_path: str | None = None
     classification: str | None = None
     suggested_name: str | None = None
+
+
+class DocumentRecord(BaseModel):
+    document_id: str
+    sha256: str
+    original_name: str
+    classification: str
+    suggested_name: str
+    title: str
+    author: str | None = None
+    date: str | None = None
+    year: str
+    technologies: list[str] = Field(default_factory=list)
+    summary: str = ""
+    pdf_path: str
+    markdown_path: str
+    chunks_indexed: int
+    uploaded_at: str
 
 
 def warn_missing_groq_key() -> None:
@@ -96,6 +120,8 @@ async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "documents_dir": str(DOCUMENTS_DIR),
+        "manifest_path": str(MANIFEST_PATH),
+        "memory_dir": str(MEMORY_DIR),
         "groq_configured": bool(GROQ_API_KEY),
         "chroma": {"host": CHROMA_HOST, "port": CHROMA_PORT, "collection": CHROMA_COLLECTION},
     }
@@ -108,19 +134,33 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
 
     document_id = str(uuid.uuid4())
     original_name = safe_filename(file.filename or "document.pdf")
-    pdf_path = ORIGINALS_DIR / f"{document_id}-{original_name}"
-    save_upload(file, pdf_path)
+    staging_path = ORIGINALS_DIR / f".upload-{document_id}.pdf"
+    save_upload(file, staging_path)
+    file_hash = hash_file(staging_path)
 
-    markdown_text = extract_pdf_markdown(pdf_path)
+    existing_record = find_document_by_hash(file_hash)
+    if existing_record is not None:
+        staging_path.unlink(missing_ok=True)
+        return {
+            **existing_record,
+            "duplicate": True,
+            "message": "Document already indexed. Returning existing record.",
+        }
+
+    markdown_text = extract_pdf_markdown(staging_path)
     if not markdown_text.strip():
+        staging_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Could not extract text from PDF.")
 
     ai_result = analyze_document_with_groq(markdown_text, original_name)
-    suggested_name = safe_filename(ai_result.get("suggested_name") or original_name)
-    if not suggested_name.lower().endswith(".md"):
-        suggested_name = f"{Path(suggested_name).stem}.md"
+    file_plan = build_file_plan(ai_result, original_name, document_id)
 
-    markdown_path = MARKDOWN_DIR / f"{Path(suggested_name).stem}-{document_id}.md"
+    file_plan["pdf_dir"].mkdir(parents=True, exist_ok=True)
+    file_plan["markdown_dir"].mkdir(parents=True, exist_ok=True)
+
+    pdf_path = ensure_unique_path(file_plan["pdf_path"])
+    markdown_path = ensure_unique_path(file_plan["markdown_path"])
+    staging_path.replace(pdf_path)
     markdown_path.write_text(markdown_text, encoding="utf-8")
 
     chunks = split_text(markdown_text)
@@ -128,10 +168,13 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
     metadatas = [
         build_chroma_metadata(
             document_id=document_id,
+            file_hash=file_hash,
             chunk_index=index,
             pdf_path=pdf_path,
             markdown_path=markdown_path,
             original_name=original_name,
+            suggested_name=file_plan["suggested_name"],
+            year=file_plan["year"],
             ai_result=ai_result,
         )
         for index, _ in enumerate(chunks)
@@ -141,15 +184,25 @@ async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
     collection = get_chroma_collection()
     collection.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
 
-    return {
-        "document_id": document_id,
-        "classification": ai_result.get("classification"),
-        "suggested_name": suggested_name,
-        "metadata": ai_result.get("metadata", {}),
-        "pdf_path": str(pdf_path),
-        "markdown_path": str(markdown_path),
-        "chunks_indexed": len(chunks),
-    }
+    record = build_document_record(
+        document_id=document_id,
+        file_hash=file_hash,
+        original_name=original_name,
+        ai_result=ai_result,
+        file_plan=file_plan,
+        pdf_path=pdf_path,
+        markdown_path=markdown_path,
+        chunks_indexed=len(chunks),
+    )
+    append_manifest_record(record)
+
+    return {**record, "duplicate": False, "metadata": ai_result.get("metadata", {})}
+
+
+@app.get("/documents", response_model=list[DocumentRecord])
+async def list_documents(limit: int = Query(default=50, ge=1, le=500)) -> list[DocumentRecord]:
+    records = read_manifest_records()
+    return [DocumentRecord(**record) for record in records[-limit:]][::-1]
 
 
 @app.get("/search-semantic", response_model=list[SearchResult])
@@ -166,7 +219,9 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
 
     references = semantic_search(query=request.message, limit=request.limit)
     context = build_rag_context(references)
-    messages = build_chat_messages(request, context)
+    session_id = safe_session_id(request.session_id)
+    persistent_history = load_session_memory(session_id)
+    messages = build_chat_messages(request, context, persistent_history)
 
     client = get_groq_client()
     response = client.chat.completions.create(
@@ -175,11 +230,34 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
         temperature=0.2,
     )
     answer = response.choices[0].message.content or ""
+    save_session_turn(
+        session_id=session_id,
+        user_message=request.message,
+        assistant_message=answer,
+        references=references,
+    )
 
     return {
         "answer": answer,
         "references": [result.model_dump() for result in references],
+        "session_id": session_id,
     }
+
+
+@app.get("/memory/{session_id}")
+async def get_memory(session_id: str) -> dict[str, Any]:
+    clean_session_id = safe_session_id(session_id)
+    return {
+        "session_id": clean_session_id,
+        "turns": load_session_memory(clean_session_id),
+    }
+
+
+@app.delete("/memory/{session_id}")
+async def delete_memory(session_id: str) -> dict[str, str]:
+    clean_session_id = safe_session_id(session_id)
+    session_memory_path(clean_session_id).unlink(missing_ok=True)
+    return {"session_id": clean_session_id, "status": "deleted"}
 
 
 def is_pdf_upload(file: UploadFile) -> bool:
@@ -196,11 +274,36 @@ def save_upload(file: UploadFile, destination: Path) -> None:
         file.file.close()
 
 
+def hash_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def safe_filename(value: str) -> str:
     value = value.strip().replace("\\", "/").split("/")[-1]
     value = re.sub(r"[^A-Za-z0-9._ -]+", "-", value)
     value = re.sub(r"\s+", " ", value).strip(" .")
     return value or "document.pdf"
+
+
+def safe_slug(value: str, fallback: str = "documento") -> str:
+    value = value.strip().lower()
+    value = value.replace("ç", "c")
+    value = re.sub(r"[áàãâä]", "a", value)
+    value = re.sub(r"[éèêë]", "e", value)
+    value = re.sub(r"[íìîï]", "i", value)
+    value = re.sub(r"[óòõôö]", "o", value)
+    value = re.sub(r"[úùûü]", "u", value)
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value or fallback
+
+
+def safe_session_id(value: str) -> str:
+    return safe_slug(value, fallback="default")[:80]
 
 
 def extract_pdf_markdown(pdf_path: Path) -> str:
@@ -296,6 +399,114 @@ def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str,
     }
 
 
+def build_file_plan(ai_result: dict[str, Any], original_name: str, document_id: str) -> dict[str, Any]:
+    metadata = ai_result.get("metadata", {})
+    classification = safe_slug(str(ai_result.get("classification") or "outro"), "outro")
+    title = str(metadata.get("title") or Path(original_name).stem)
+    year = extract_year(str(metadata.get("date") or "")) or extract_year(str(ai_result.get("suggested_name") or ""))
+    if not year:
+        year = "sem-data"
+
+    suggested_stem = Path(str(ai_result.get("suggested_name") or title)).stem
+    if suggested_stem.lower().endswith(".pdf"):
+        suggested_stem = Path(suggested_stem).stem
+    normalized_stem = safe_slug(suggested_stem or title)
+    short_id = document_id[:8]
+    base_name = f"{year}__{classification}__{normalized_stem}__{short_id}"
+    suggested_name = f"{base_name}.md"
+
+    pdf_dir = ORIGINALS_DIR / classification / year
+    markdown_dir = MARKDOWN_DIR / classification / year
+
+    return {
+        "classification": classification,
+        "title": title,
+        "year": year,
+        "suggested_name": suggested_name,
+        "pdf_dir": pdf_dir,
+        "markdown_dir": markdown_dir,
+        "pdf_path": pdf_dir / f"{base_name}.pdf",
+        "markdown_path": markdown_dir / f"{base_name}.md",
+    }
+
+
+def extract_year(value: str) -> str | None:
+    match = re.search(r"\b(19|20)\d{2}\b", value)
+    return match.group(0) if match else None
+
+
+def ensure_unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(2, 10000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(status_code=500, detail=f"Could not create unique path for {path.name}.")
+
+
+def build_document_record(
+    document_id: str,
+    file_hash: str,
+    original_name: str,
+    ai_result: dict[str, Any],
+    file_plan: dict[str, Any],
+    pdf_path: Path,
+    markdown_path: Path,
+    chunks_indexed: int,
+) -> dict[str, Any]:
+    metadata = ai_result.get("metadata", {})
+    technologies = metadata.get("technologies") if isinstance(metadata, dict) else []
+    if not isinstance(technologies, list):
+        technologies = []
+
+    return {
+        "document_id": document_id,
+        "sha256": file_hash,
+        "original_name": original_name,
+        "classification": file_plan["classification"],
+        "suggested_name": file_plan["suggested_name"],
+        "title": str(metadata.get("title") or file_plan["title"]),
+        "author": metadata.get("author"),
+        "date": metadata.get("date"),
+        "year": file_plan["year"],
+        "technologies": [str(item) for item in technologies if str(item).strip()],
+        "summary": str(metadata.get("summary") or ""),
+        "pdf_path": str(pdf_path),
+        "markdown_path": str(markdown_path),
+        "chunks_indexed": chunks_indexed,
+        "uploaded_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def append_manifest_record(record: dict[str, Any]) -> None:
+    with MANIFEST_PATH.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_manifest_records() -> list[dict[str, Any]]:
+    if not MANIFEST_PATH.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with MANIFEST_PATH.open("r", encoding="utf-8") as input_file:
+        for line in input_file:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
+def find_document_by_hash(file_hash: str) -> dict[str, Any] | None:
+    for record in reversed(read_manifest_records()):
+        if record.get("sha256") == file_hash:
+            return record
+    return None
+
+
 def fallback_document_analysis(markdown_text: str, original_name: str) -> dict[str, Any]:
     title = first_heading(markdown_text) or Path(original_name).stem
     year_match = re.search(r"\b(19|20)\d{2}\b", markdown_text[:3000])
@@ -373,10 +584,13 @@ def get_chroma_collection():
 
 def build_chroma_metadata(
     document_id: str,
+    file_hash: str,
     chunk_index: int,
     pdf_path: Path,
     markdown_path: Path,
     original_name: str,
+    suggested_name: str,
+    year: str,
     ai_result: dict[str, Any],
 ) -> dict[str, str | int | float | bool]:
     metadata = ai_result.get("metadata", {})
@@ -386,13 +600,15 @@ def build_chroma_metadata(
 
     return {
         "document_id": document_id,
+        "sha256": file_hash,
         "chunk_index": chunk_index,
         "original_name": original_name,
         "classification": str(ai_result.get("classification") or "outro"),
-        "suggested_name": str(ai_result.get("suggested_name") or original_name),
+        "suggested_name": suggested_name,
         "title": str(metadata.get("title") or Path(original_name).stem),
         "author": str(metadata.get("author") or ""),
         "date": str(metadata.get("date") or ""),
+        "year": year,
         "technologies": json.dumps(technologies, ensure_ascii=False),
         "summary": str(metadata.get("summary") or ""),
         "pdf_path": str(pdf_path),
@@ -457,13 +673,22 @@ def read_relevant_markdown(path: Path, fallback: str) -> str:
         return fallback
 
 
-def build_chat_messages(request: ChatRequest, context: str) -> list[dict[str, str]]:
+def build_chat_messages(
+    request: ChatRequest,
+    context: str,
+    persistent_history: list[dict[str, Any]],
+) -> list[dict[str, str]]:
     system_prompt = (
         "You are Nexus, a precise assistant for a private document archive. "
         "Answer in the user's language. Use only the supplied context when citing documents. "
-        "If the context is insufficient, say what is missing. Include concise references."
+        "If the context is insufficient, say what is missing. Include concise references. "
+        "Use the persistent session memory to preserve user preferences and prior conclusions."
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    memory_summary = build_memory_summary(persistent_history)
+    if memory_summary:
+        messages.append({"role": "system", "content": f"Persistent session memory:\n{memory_summary}"})
 
     for item in request.history[-10:]:
         messages.append({"role": item.role, "content": item.content})
@@ -474,3 +699,59 @@ def build_chat_messages(request: ChatRequest, context: str) -> list[dict[str, st
     )
     messages.append({"role": "user", "content": user_prompt})
     return messages
+
+
+def session_memory_path(session_id: str) -> Path:
+    return MEMORY_DIR / f"{session_id}.jsonl"
+
+
+def load_session_memory(session_id: str) -> list[dict[str, Any]]:
+    path = session_memory_path(session_id)
+    if not path.exists():
+        return []
+    turns: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as input_file:
+        for line in input_file:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                turns.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return turns[-CHAT_MEMORY_TURNS:]
+
+
+def save_session_turn(
+    session_id: str,
+    user_message: str,
+    assistant_message: str,
+    references: list[SearchResult],
+) -> None:
+    record = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "user": user_message,
+        "assistant": assistant_message,
+        "references": [
+            {
+                "document_id": reference.document_id,
+                "title": reference.metadata.get("title") or reference.suggested_name,
+                "markdown_path": reference.markdown_path,
+            }
+            for reference in references
+        ],
+    }
+    with session_memory_path(session_id).open("a", encoding="utf-8") as output:
+        output.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def build_memory_summary(turns: list[dict[str, Any]]) -> str:
+    if not turns:
+        return ""
+    snippets: list[str] = []
+    for turn in turns[-8:]:
+        user_message = str(turn.get("user") or "")[:500]
+        assistant_message = str(turn.get("assistant") or "")[:700]
+        if user_message or assistant_message:
+            snippets.append(f"User: {user_message}\nAssistant: {assistant_message}")
+    return "\n\n".join(snippets)

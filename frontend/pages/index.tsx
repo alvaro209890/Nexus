@@ -4,8 +4,10 @@ import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
 import {
   ChatTurn,
+  DocumentRecord,
   SearchResult,
   UploadResponse,
+  listDocuments,
   searchSemantic,
   sendChatMessage,
   uploadDocument
@@ -32,6 +34,8 @@ export default function DashboardPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
   const [chatReferences, setChatReferences] = useState<SearchResult[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [sessionId, setSessionId] = useState("default");
   const [busy, setBusy] = useState<BusyState>(null);
   const [error, setError] = useState("");
 
@@ -48,12 +52,29 @@ export default function DashboardPage() {
     });
   }, [router]);
 
+  useEffect(() => {
+    const savedSession = window.localStorage.getItem("nexus_session_id");
+    if (savedSession) {
+      setSessionId(savedSession);
+      return;
+    }
+
+    const nextSession = `nexus-${crypto.randomUUID()}`;
+    window.localStorage.setItem("nexus_session_id", nextSession);
+    setSessionId(nextSession);
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    void refreshDocuments();
+  }, [user]);
+
   const displayName = useMemo(() => {
     return user?.displayName || user?.email || "Operador Nexus";
   }, [user]);
 
-  const indexedChunks = uploadResult?.chunks_indexed ?? 0;
-  const lastClassification = uploadResult?.classification || "aguardando";
+  const indexedChunks = documents.reduce((total, document) => total + document.chunks_indexed, 0);
+  const lastClassification = uploadResult?.classification || documents[0]?.classification || "aguardando";
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,7 +86,12 @@ export default function DashboardPage() {
     try {
       const result = await uploadDocument(selectedFile);
       setUploadResult(result);
-      setUploadStatus(`Documento indexado com ${result.chunks_indexed} chunk(s).`);
+      setUploadStatus(
+        result.duplicate
+          ? "Documento ja existia na memoria. Registro recuperado."
+          : `Documento indexado com ${result.chunks_indexed} chunk(s).`
+      );
+      await refreshDocuments();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha no upload.");
       setUploadStatus("");
@@ -102,7 +128,7 @@ export default function DashboardPage() {
     setBusy("chat");
     setError("");
     try {
-      const result = await sendChatMessage(cleanMessage, chatHistory);
+      const result = await sendChatMessage(cleanMessage, chatHistory, sessionId);
       setChatHistory([
         ...nextHistory,
         { role: "assistant", content: result.answer }
@@ -123,6 +149,14 @@ export default function DashboardPage() {
   async function handleLogout() {
     if (firebaseAuth) await signOut(firebaseAuth);
     await router.replace("/login");
+  }
+
+  async function refreshDocuments() {
+    try {
+      setDocuments(await listDocuments());
+    } catch (err) {
+      console.warn("Could not load documents", err);
+    }
   }
 
   if (!authChecked) {
@@ -200,7 +234,7 @@ export default function DashboardPage() {
             <div className="relative z-10 mt-8 grid gap-3 md:grid-cols-3">
               <MetricCard label="Ultima classe" value={lastClassification} />
               <MetricCard label="Chunks indexados" value={String(indexedChunks)} />
-              <MetricCard label="Resultados ativos" value={String(searchResults.length)} />
+              <MetricCard label="Memoria documental" value={String(documents.length)} />
             </div>
             <div className="orb orb-one" />
             <div className="orb orb-two" />
@@ -252,6 +286,7 @@ export default function DashboardPage() {
                 {uploadStatus && <p className="mt-4 text-sm font-semibold text-moss">{uploadStatus}</p>}
                 {uploadResult && (
                   <div className="mt-5 rounded-[1.25rem] border border-ink/10 bg-white/70 p-4 text-sm">
+                    {uploadResult.duplicate && <p><strong>Status:</strong> documento duplicado</p>}
                     <p><strong>Classificacao:</strong> {uploadResult.classification}</p>
                     <p><strong>Nome sugerido:</strong> {uploadResult.suggested_name}</p>
                     <p className="break-all"><strong>Markdown:</strong> {uploadResult.markdown_path}</p>
@@ -279,7 +314,35 @@ export default function DashboardPage() {
               </form>
 
               <section className="panel-card">
-                <p className="eyebrow">Operacao</p>
+                <p className="eyebrow">Memoria</p>
+                <h2 className="mt-3 font-display text-3xl font-bold">Documentos recentes</h2>
+                <div className="mt-4 space-y-3">
+                  {documents.length === 0 && (
+                    <EmptyState
+                      title="Memoria vazia"
+                      message="Envie um PDF para criar o primeiro registro persistente."
+                    />
+                  )}
+                  {documents.slice(0, 4).map((document) => (
+                    <article key={document.document_id} className="result-card">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="status-chip">{document.classification}</span>
+                        <span className="text-xs font-bold text-slateblue">{document.year}</span>
+                      </div>
+                      <h3 className="mt-2 font-display text-lg font-bold">{document.title}</h3>
+                      <p className="mt-1 line-clamp-2 text-sm text-slateblue">
+                        {document.summary || document.suggested_name}
+                      </p>
+                      <p className="mt-2 text-xs text-slateblue/80">
+                        {document.chunks_indexed} chunk(s) na memoria
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="panel-card">
+                <p className="eyebrow">Atalhos de raciocinio</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   {quickPrompts.map((prompt) => (
                     <button
@@ -343,6 +406,9 @@ export default function DashboardPage() {
                   <div>
                     <p className="eyebrow">03 / Sintese</p>
                     <h2 className="mt-3 font-display text-3xl font-bold">Chat RAG</h2>
+                    <p className="mt-2 break-all text-xs text-slateblue">
+                      Sessao de memoria: {sessionId}
+                    </p>
                   </div>
                   <span className="status-chip">{busy === "chat" ? "pensando" : "online"}</span>
                 </div>

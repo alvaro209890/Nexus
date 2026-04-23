@@ -6,6 +6,8 @@ export type UploadResponse = {
   pdf_path: string;
   markdown_path: string;
   chunks_indexed: number;
+  duplicate?: boolean;
+  message?: string;
 };
 
 export type SearchResult = {
@@ -28,6 +30,25 @@ export type ChatTurn = {
 export type ChatResponse = {
   answer: string;
   references: SearchResult[];
+  session_id: string;
+};
+
+export type DocumentRecord = {
+  document_id: string;
+  sha256: string;
+  original_name: string;
+  classification: string;
+  suggested_name: string;
+  title: string;
+  author?: string | null;
+  date?: string | null;
+  year: string;
+  technologies: string[];
+  summary: string;
+  pdf_path: string;
+  markdown_path: string;
+  chunks_indexed: number;
+  uploaded_at: string;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -58,12 +79,18 @@ export async function searchSemantic(query: string): Promise<SearchResult[]> {
 
 export async function sendChatMessage(
   message: string,
-  history: ChatTurn[]
+  history: ChatTurn[],
+  sessionId: string
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, history, limit: 5 })
+    body: JSON.stringify({ message, history, session_id: sessionId, limit: 5 })
   });
   return parseJsonResponse<ChatResponse>(response);
+}
+
+export async function listDocuments(): Promise<DocumentRecord[]> {
+  const response = await fetch(`${API_BASE}/documents?limit=20`);
+  return parseJsonResponse<DocumentRecord[]>(response);
 }

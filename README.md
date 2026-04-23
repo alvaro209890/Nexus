@@ -2,8 +2,9 @@
 
 Nexus is a document-management and RAG system for PDF archives. It stores
 source documents in `~/Downloads/BD_NEXUS`, extracts Markdown with Docling,
-classifies metadata with Groq, indexes chunks in ChromaDB, and exposes a
-Next.js dashboard protected by Firebase Authentication.
+classifies metadata with Groq, indexes chunks in ChromaDB, keeps a persistent
+document manifest and chat memory, and exposes a Next.js dashboard protected by
+Firebase Authentication.
 
 ## Project Layout
 
@@ -18,6 +19,13 @@ Runtime document storage:
 ```bash
 mkdir -p "$HOME/Downloads/BD_NEXUS"
 ```
+
+Nexus creates this runtime layout:
+
+- `originals/{classification}/{year}/`: normalized PDF originals.
+- `markdown/{classification}/{year}/`: extracted Markdown files.
+- `manifest.jsonl`: append-only document memory with hashes, paths and metadata.
+- `memory/{session_id}.jsonl`: persistent chat memory per frontend session.
 
 ## Backend
 
@@ -39,8 +47,24 @@ Backend endpoints:
 
 - `GET http://localhost:8000/health`
 - `POST http://localhost:8000/upload-document`
+- `GET http://localhost:8000/documents`
 - `GET http://localhost:8000/search-semantic?query=...`
 - `POST http://localhost:8000/chat`
+- `GET http://localhost:8000/memory/{session_id}`
+- `DELETE http://localhost:8000/memory/{session_id}`
+
+Upload behavior:
+
+- Files are hashed with SHA-256 before indexing.
+- Duplicate PDFs return the existing manifest record instead of creating a second copy.
+- New PDFs are saved under classification/year folders using normalized names.
+- Markdown and ChromaDB metadata include the original filename, suggested name, year, title, technologies and full paths.
+
+Chat behavior:
+
+- The frontend stores a `nexus_session_id` in `localStorage`.
+- `/chat` appends each turn to `~/Downloads/BD_NEXUS/memory/{session_id}.jsonl`.
+- Recent memory turns are injected into future prompts alongside retrieved document context.
 
 Local development without Docker requires ChromaDB to be available at the
 configured `CHROMA_HOST` and `CHROMA_PORT`:
