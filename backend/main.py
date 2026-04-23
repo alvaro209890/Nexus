@@ -101,6 +101,9 @@ class DocumentRecord(BaseModel):
     year: str
     technologies: list[str] = Field(default_factory=list)
     summary: str = ""
+    folder_path: str = ""
+    tags: list[str] = Field(default_factory=list)
+    project: str | None = None
     pdf_path: str
     markdown_path: str
     chunks_indexed: int
@@ -344,11 +347,14 @@ def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[s
         "required_json_schema": {
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
+            "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
             "metadata": {
                 "title": "string",
                 "author": "string or null",
                 "date": "YYYY-MM-DD or YYYY or null",
+                "project": "project/client/product name or null",
                 "technologies": ["string"],
+                "tags": ["string"],
                 "summary": "short string",
             },
         },
@@ -389,11 +395,14 @@ def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str,
     return {
         "classification": str(parsed.get("classification") or "outro"),
         "suggested_name": str(parsed.get("suggested_name") or original_name),
+        "folder_path": str(parsed.get("folder_path") or ""),
         "metadata": {
             "title": metadata.get("title") or Path(original_name).stem,
             "author": metadata.get("author"),
             "date": metadata.get("date"),
+            "project": metadata.get("project"),
             "technologies": [str(item) for item in technologies if str(item).strip()],
+            "tags": normalize_string_list(metadata.get("tags")),
             "summary": metadata.get("summary") or "",
         },
     }
@@ -415,13 +424,16 @@ def build_file_plan(ai_result: dict[str, Any], original_name: str, document_id: 
     base_name = f"{year}__{classification}__{normalized_stem}__{short_id}"
     suggested_name = f"{base_name}.md"
 
-    pdf_dir = ORIGINALS_DIR / classification / year
-    markdown_dir = MARKDOWN_DIR / classification / year
+    folder_parts = resolve_folder_parts(ai_result, classification, year)
+    relative_folder = "/".join(folder_parts)
+    pdf_dir = ORIGINALS_DIR.joinpath(*folder_parts)
+    markdown_dir = MARKDOWN_DIR.joinpath(*folder_parts)
 
     return {
         "classification": classification,
         "title": title,
         "year": year,
+        "folder_path": relative_folder,
         "suggested_name": suggested_name,
         "pdf_dir": pdf_dir,
         "markdown_dir": markdown_dir,
@@ -433,6 +445,40 @@ def build_file_plan(ai_result: dict[str, Any], original_name: str, document_id: 
 def extract_year(value: str) -> str | None:
     match = re.search(r"\b(19|20)\d{2}\b", value)
     return match.group(0) if match else None
+
+
+def resolve_folder_parts(ai_result: dict[str, Any], classification: str, year: str) -> list[str]:
+    metadata = ai_result.get("metadata", {})
+    requested_path = str(ai_result.get("folder_path") or "")
+    parts = sanitize_relative_folder(requested_path)
+    if parts:
+        return parts
+
+    project = safe_slug(str(metadata.get("project") or ""), "")
+    technologies = normalize_string_list(metadata.get("technologies"))
+    area = safe_slug(technologies[0], "") if technologies else ""
+
+    fallback_parts = [part for part in [area, project, year, classification] if part]
+    return fallback_parts or [classification, year]
+
+
+def sanitize_relative_folder(value: str) -> list[str]:
+    raw_parts = re.split(r"[\\/]+", value.strip())
+    parts: list[str] = []
+    for raw_part in raw_parts:
+        if raw_part in {"", ".", ".."}:
+            continue
+        slug = safe_slug(raw_part, "")
+        if slug:
+            parts.append(slug[:60])
+
+    return parts[:4]
+
+
+def normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def ensure_unique_path(path: Path) -> Path:
@@ -471,7 +517,10 @@ def build_document_record(
         "date": metadata.get("date"),
         "year": file_plan["year"],
         "technologies": [str(item) for item in technologies if str(item).strip()],
+        "tags": normalize_string_list(metadata.get("tags")),
+        "project": metadata.get("project"),
         "summary": str(metadata.get("summary") or ""),
+        "folder_path": file_plan["folder_path"],
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
         "chunks_indexed": chunks_indexed,
@@ -514,11 +563,14 @@ def fallback_document_analysis(markdown_text: str, original_name: str) -> dict[s
     return {
         "classification": "outro",
         "suggested_name": f"[{year}] Documento - {title}.md",
+        "folder_path": "",
         "metadata": {
             "title": title,
             "author": None,
             "date": year if year != "0000" else None,
+            "project": None,
             "technologies": [],
+            "tags": [],
             "summary": "",
         },
     }
@@ -610,7 +662,10 @@ def build_chroma_metadata(
         "date": str(metadata.get("date") or ""),
         "year": year,
         "technologies": json.dumps(technologies, ensure_ascii=False),
+        "tags": json.dumps(normalize_string_list(metadata.get("tags")), ensure_ascii=False),
+        "project": str(metadata.get("project") or ""),
         "summary": str(metadata.get("summary") or ""),
+        "folder_path": "/".join(markdown_path.relative_to(MARKDOWN_DIR).parts[:-1]),
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
     }

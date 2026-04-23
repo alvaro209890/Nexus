@@ -22,10 +22,16 @@ mkdir -p "$HOME/Downloads/BD_NEXUS"
 
 Nexus creates this runtime layout:
 
-- `originals/{classification}/{year}/`: normalized PDF originals.
-- `markdown/{classification}/{year}/`: extracted Markdown files.
+- `originals/{folder_path}/`: normalized PDF originals.
+- `markdown/{folder_path}/`: extracted Markdown files.
 - `manifest.jsonl`: append-only document memory with hashes, paths and metadata.
 - `memory/{session_id}.jsonl`: persistent chat memory per frontend session.
+
+`folder_path` is suggested by the AI as a relative path with up to four safe
+segments, such as `juridico/cliente-x/2026/contrato`. The backend sanitizes all
+segments, rejects traversal implicitly, and falls back to a deterministic
+`technology/project/year/classification` layout when the AI does not provide a
+useful path.
 
 ## Backend
 
@@ -58,7 +64,7 @@ Upload behavior:
 - Files are hashed with SHA-256 before indexing.
 - Duplicate PDFs return the existing manifest record instead of creating a second copy.
 - New PDFs are saved under classification/year folders using normalized names.
-- Markdown and ChromaDB metadata include the original filename, suggested name, year, title, technologies and full paths.
+- Markdown and ChromaDB metadata include the original filename, suggested name, folder path, year, title, project, tags, technologies and full paths.
 
 Chat behavior:
 

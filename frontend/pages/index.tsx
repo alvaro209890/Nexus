@@ -333,6 +333,9 @@ export default function DashboardPage() {
                       <p className="mt-1 line-clamp-2 text-sm text-slateblue">
                         {document.summary || document.suggested_name}
                       </p>
+                      <p className="mt-2 break-all text-xs font-semibold text-slateblue">
+                        Pasta: {document.folder_path || "sem pasta"}
+                      </p>
                       <p className="mt-2 text-xs text-slateblue/80">
                         {document.chunks_indexed} chunk(s) na memoria
                       </p>

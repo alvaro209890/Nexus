@@ -45,6 +45,9 @@ export type DocumentRecord = {
   year: string;
   technologies: string[];
   summary: string;
+  folder_path: string;
+  tags: string[];
+  project?: string | null;
   pdf_path: string;
   markdown_path: string;
   chunks_indexed: number;
