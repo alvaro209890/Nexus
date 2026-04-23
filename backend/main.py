@@ -424,15 +424,22 @@ async def chat(
 ) -> dict[str, Any]:
     ensure_groq_configured()
 
-    should_search_documents = should_use_document_context(request.message)
+    session_id = safe_session_id(request.session_id)
+    persistent_history = load_session_memory(current_user, session_id)
+    should_search_documents = should_use_document_context(request.message, persistent_history)
     references: list[SearchResult] = []
     if should_search_documents:
+        search_query = build_contextual_search_query(request.message, persistent_history)
         lookup_references = lookup_specific_documents_with_groq(
             current_user=current_user,
-            user_message=request.message,
+            user_message=search_query,
             limit=request.limit,
         )
-        semantic_references = semantic_search(current_user=current_user, query=request.message, limit=request.limit)
+        semantic_references = semantic_search(
+            current_user=current_user,
+            query=search_query,
+            limit=min(request.limit * 2, 20),
+        )
         references = merge_search_results(
             [lookup_references, semantic_references],
             limit=request.limit,
@@ -440,8 +447,6 @@ async def chat(
         )
 
     context = build_rag_context(current_user, references)
-    session_id = safe_session_id(request.session_id)
-    persistent_history = load_session_memory(current_user, session_id)
     messages = build_chat_messages(request, context, persistent_history, should_search_documents)
 
     client = get_groq_client()
@@ -1586,7 +1591,10 @@ def lookup_specific_documents_with_groq(
     )
 
 
-def should_use_document_context(user_message: str) -> bool:
+def should_use_document_context(
+    user_message: str,
+    persistent_history: list[dict[str, Any]] | None = None,
+) -> bool:
     normalized = normalize_search_text(user_message)
     if not normalized:
         return False
@@ -1617,6 +1625,10 @@ def should_use_document_context(user_message: str) -> bool:
         "notas",
         "relatorio",
         "relatorios",
+        "base",
+        "rag",
+        "indexado",
+        "indexados",
     }
     action_terms = {
         "procure",
@@ -1642,6 +1654,34 @@ def should_use_document_context(user_message: str) -> bool:
         "citar",
         "referencie",
         "referenciar",
+        "compare",
+        "comparar",
+        "explique",
+        "explicar",
+        "detalhe",
+        "detalhar",
+    }
+    follow_up_terms = {
+        "isso",
+        "esse",
+        "essa",
+        "estes",
+        "estas",
+        "ele",
+        "ela",
+        "anterior",
+        "acima",
+        "continue",
+        "continuar",
+        "melhor",
+        "detalhe",
+        "detalhar",
+        "explique",
+        "explicar",
+        "resuma",
+        "resumir",
+        "compare",
+        "comparar",
     }
     archive_phrases = (
         "no-meu-acervo",
@@ -1663,7 +1703,66 @@ def should_use_document_context(user_message: str) -> bool:
         return True
     if (tokens & action_terms) and any(phrase in normalized for phrase in archive_phrases):
         return True
+    if persistent_history and tokens & follow_up_terms and last_turn_has_references(persistent_history):
+        return True
     return any(phrase in normalized for phrase in archive_phrases)
+
+
+def last_turn_has_references(persistent_history: list[dict[str, Any]]) -> bool:
+    for turn in reversed(persistent_history[-4:]):
+        references = turn.get("references")
+        if isinstance(references, list) and references:
+            return True
+    return False
+
+
+def build_contextual_search_query(user_message: str, persistent_history: list[dict[str, Any]]) -> str:
+    clean_message = re.sub(r"\s+", " ", user_message).strip()
+    if not clean_message:
+        return user_message
+
+    tokens = tokenize_search_terms(clean_message)
+    if len(tokens) > 6 and not contains_follow_up_reference(clean_message):
+        return clean_message
+
+    prior_user_messages: list[str] = []
+    referenced_titles: list[str] = []
+    for turn in reversed(persistent_history[-4:]):
+        user_text = re.sub(r"\s+", " ", str(turn.get("user") or "")).strip()
+        if user_text:
+            prior_user_messages.append(user_text[:240])
+        references = turn.get("references")
+        if isinstance(references, list):
+            for reference in references[:3]:
+                if not isinstance(reference, dict):
+                    continue
+                title = str(reference.get("title") or reference.get("suggested_name") or "").strip()
+                if title and title not in referenced_titles:
+                    referenced_titles.append(title[:160])
+
+    additions = prior_user_messages[:2] + referenced_titles[:3]
+    if not additions:
+        return clean_message
+    return f"{clean_message}\nContexto recente para busca: " + " | ".join(additions)
+
+
+def contains_follow_up_reference(user_message: str) -> bool:
+    normalized = normalize_search_text(user_message)
+    return any(
+        phrase in normalized
+        for phrase in (
+            "isso",
+            "esse",
+            "essa",
+            "anterior",
+            "acima",
+            "continue",
+            "melhor",
+            "detalhe",
+            "explique",
+            "resuma",
+        )
+    )
 
 
 def is_path_within(base: Path, path: Path) -> bool:
@@ -1680,11 +1779,26 @@ def build_rag_context(current_user: AuthenticatedUserContext, references: list[S
     blocks: list[str] = []
     for index, reference in enumerate(references, start=1):
         title = reference.metadata.get("title") or reference.suggested_name or reference.document_id
+        original_name = reference.metadata.get("original_name") or reference.suggested_name or ""
+        classification = reference.classification or reference.metadata.get("classification") or ""
+        year = reference.metadata.get("year") or ""
+        score = f"{reference.score:.3f}" if isinstance(reference.score, float) else "metadata"
         markdown_path = reference.markdown_path
         source_text = reference.snippet
         if markdown_path:
             source_text = read_relevant_markdown(current_user, Path(markdown_path), reference.snippet)
-        blocks.append(f"[Fonte {index}] {title}\n{source_text[:4000]}")
+        blocks.append(
+            "\n".join(
+                [
+                    f"[Fonte {index}] {title}",
+                    f"Arquivo: {original_name}",
+                    f"Classificacao: {classification}",
+                    f"Ano: {year}",
+                    f"Score: {score}",
+                    f"Trecho relevante:\n{source_text[:4000]}",
+                ]
+            )
+        )
     return "\n\n".join(blocks)
 
 
@@ -1695,9 +1809,38 @@ def read_relevant_markdown(current_user: AuthenticatedUserContext, path: Path, f
         if not is_path_within(current_user.user_dir, path):
             return fallback
         text = path.read_text(encoding="utf-8")
-        return text[:4000] if text else fallback
+        if not text:
+            return fallback
+        return extract_relevant_window(text, fallback, window=4000)
     except Exception:
         return fallback
+
+
+def extract_relevant_window(text: str, fallback: str, *, window: int) -> str:
+    clean_fallback = re.sub(r"\s+", " ", fallback or "").strip()
+    if not clean_fallback:
+        return text[:window]
+
+    anchor = clean_fallback[:240]
+    index = text.find(anchor)
+    if index < 0:
+        anchor_tokens = tokenize_search_terms(anchor)
+        candidates = [token for token in anchor_tokens if len(token) >= 5][:8]
+        scored_positions: list[tuple[int, int]] = []
+        lowered = text.lower()
+        for token in candidates:
+            position = lowered.find(token.lower())
+            if position >= 0:
+                scored_positions.append((position, len(token)))
+        if scored_positions:
+            index = min(scored_positions, key=lambda item: item[0])[0]
+        else:
+            return fallback[:window] if fallback else text[:window]
+
+    start = max(0, index - window // 3)
+    end = min(len(text), start + window)
+    start = max(0, end - window)
+    return text[start:end].strip()
 
 
 def build_chat_messages(
@@ -1713,6 +1856,9 @@ def build_chat_messages(
         "Do not search or imply that you searched user files unless document context was supplied. "
         "For general questions, answer directly from reasoning and persistent memory. "
         "For document questions, use only supplied context when citing documents; if it is insufficient, say what is missing. "
+        "Before answering, identify the user's intent, separate facts from assumptions, and choose the shortest useful structure. "
+        "When the task is complex, provide a direct answer first and then a small set of next steps or tradeoffs. "
+        "When comparing or summarizing documents, synthesize across sources instead of copying long excerpts. "
         "Prefer concise, actionable answers, ask a clarifying question when the request is ambiguous, and never invent references. "
         "Answer in the user's language and use persistent session memory to preserve user preferences and prior conclusions."
     )
@@ -2086,6 +2232,24 @@ def build_memory_summary(turns: list[dict[str, Any]]) -> str:
     for turn in turns[-8:]:
         user_message = str(turn.get("user") or "")[:500]
         assistant_message = str(turn.get("assistant") or "")[:700]
+        reference_summary = summarize_turn_references(turn)
         if user_message or assistant_message:
-            snippets.append(f"User: {user_message}\nAssistant: {assistant_message}")
+            block = f"User: {user_message}\nAssistant: {assistant_message}"
+            if reference_summary:
+                block += f"\nReferences used: {reference_summary}"
+            snippets.append(block)
     return "\n\n".join(snippets)
+
+
+def summarize_turn_references(turn: dict[str, Any]) -> str:
+    references = turn.get("references")
+    if not isinstance(references, list) or not references:
+        return ""
+    labels: list[str] = []
+    for reference in references[:4]:
+        if not isinstance(reference, dict):
+            continue
+        label = str(reference.get("title") or reference.get("suggested_name") or reference.get("document_id") or "").strip()
+        if label:
+            labels.append(label[:140])
+    return " | ".join(labels)
