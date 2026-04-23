@@ -109,6 +109,31 @@ class ChatRequest(BaseModel):
     session_id: str = Field(default="default", min_length=1)
 
 
+class ChatSessionCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+
+
+class PersistedChatMessage(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str
+    timestamp: str
+    references: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatSessionSummary(BaseModel):
+    session_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    turn_count: int = 0
+    message_count: int = 0
+    last_message_preview: str = ""
+
+
+class ChatSessionDetail(ChatSessionSummary):
+    messages: list[PersistedChatMessage] = Field(default_factory=list)
+
+
 class SearchResult(BaseModel):
     document_id: str
     chunk_id: str
@@ -437,6 +462,52 @@ async def chat(
     }
 
 
+@app.get("/chat-sessions", response_model=list[ChatSessionSummary])
+async def list_chat_sessions(
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> list[ChatSessionSummary]:
+    sessions = [ChatSessionSummary(**session) for session in read_chat_sessions_index(current_user)]
+    return sorted(sessions, key=lambda item: item.updated_at, reverse=True)
+
+
+@app.post("/chat-sessions", response_model=ChatSessionSummary)
+async def create_chat_session(
+    request: ChatSessionCreateRequest | None = None,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> ChatSessionSummary:
+    title = request.title if request else None
+    session = create_or_update_chat_session(
+        current_user=current_user,
+        session_id=build_new_session_id(),
+        title=title or "Novo chat",
+    )
+    return ChatSessionSummary(**session)
+
+
+@app.get("/chat-sessions/{session_id}", response_model=ChatSessionDetail)
+async def get_chat_session(
+    session_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> ChatSessionDetail:
+    clean_session_id = safe_session_id(session_id)
+    summary = get_chat_session_summary(current_user, clean_session_id)
+    messages = load_chat_messages(current_user, clean_session_id)
+    if summary is None and not messages:
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    summary = ensure_chat_session_summary(current_user, clean_session_id, messages=messages)
+    return ChatSessionDetail(**summary, messages=[PersistedChatMessage(**message) for message in messages])
+
+
+@app.delete("/chat-sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, str]:
+    clean_session_id = safe_session_id(session_id)
+    delete_chat_session_storage(current_user, clean_session_id)
+    return {"session_id": clean_session_id, "status": "deleted"}
+
+
 @app.get("/memory/{session_id}")
 async def get_memory(
     session_id: str,
@@ -455,7 +526,7 @@ async def delete_memory(
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> dict[str, str]:
     clean_session_id = safe_session_id(session_id)
-    session_memory_path(current_user, clean_session_id).unlink(missing_ok=True)
+    delete_chat_session_storage(current_user, clean_session_id)
     return {"session_id": clean_session_id, "status": "deleted"}
 
 
@@ -577,6 +648,7 @@ def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
         current_user.originals_dir,
         current_user.markdown_dir,
         current_user.memory_dir,
+        chat_sessions_data_dir(current_user),
     ):
         directory.mkdir(parents=True, exist_ok=True)
     current_user.manifest_path.touch(exist_ok=True)
@@ -1566,27 +1638,289 @@ def build_chat_messages(
     return messages
 
 
-def session_memory_path(current_user: AuthenticatedUserContext, session_id: str) -> Path:
+def build_new_session_id() -> str:
+    return f"chat-{uuid.uuid4().hex[:12]}"
+
+
+def chat_sessions_index_path(current_user: AuthenticatedUserContext) -> Path:
+    return current_user.memory_dir / "sessions.json"
+
+
+def chat_sessions_data_dir(current_user: AuthenticatedUserContext) -> Path:
+    return current_user.memory_dir / "sessions"
+
+
+def legacy_session_memory_path(current_user: AuthenticatedUserContext, session_id: str) -> Path:
     return current_user.memory_dir / f"{session_id}.jsonl"
 
 
-def load_session_memory(
+def session_memory_path(current_user: AuthenticatedUserContext, session_id: str) -> Path:
+    return chat_sessions_data_dir(current_user) / f"{session_id}.jsonl"
+
+
+def read_chat_sessions_index(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
+    path = chat_sessions_index_path(current_user)
+    sessions: list[dict[str, Any]] = []
+    if not path.exists():
+        sessions = []
+    else:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = []
+        if isinstance(payload, list):
+            sessions = [item for item in payload if isinstance(item, dict) and item.get("session_id")]
+
+    known_ids = {str(item.get("session_id") or "").strip() for item in sessions}
+    discovered = discover_chat_sessions_from_storage(current_user)
+    changed = False
+    for session in discovered:
+        session_id = str(session.get("session_id") or "").strip()
+        if session_id and session_id not in known_ids:
+            sessions.append(session)
+            known_ids.add(session_id)
+            changed = True
+    sessions.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    if changed:
+        write_chat_sessions_index(current_user, sessions)
+    return sessions
+
+
+def write_chat_sessions_index(current_user: AuthenticatedUserContext, sessions: list[dict[str, Any]]) -> None:
+    ensure_user_storage(current_user)
+    chat_sessions_data_dir(current_user).mkdir(parents=True, exist_ok=True)
+    chat_sessions_index_path(current_user).write_text(
+        json.dumps(sessions, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def discover_chat_sessions_from_storage(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
+    candidates: list[tuple[str, Path]] = []
+    for base_path in (chat_sessions_data_dir(current_user), current_user.memory_dir):
+        if not base_path.exists():
+            continue
+        for file_path in base_path.glob("*.jsonl"):
+            candidates.append((file_path.stem, file_path))
+
+    discovered: list[dict[str, Any]] = []
+    for session_id, file_path in candidates:
+        clean_session_id = safe_session_id(session_id)
+        messages = parse_persisted_messages(file_path)
+        if not messages:
+            continue
+        first_timestamp = str(messages[0].get("timestamp") or datetime.now(UTC).isoformat())
+        last_timestamp = str(messages[-1].get("timestamp") or first_timestamp)
+        user_messages = [message for message in messages if message.get("role") == "user"]
+        discovered.append(
+            {
+                "session_id": clean_session_id,
+                "title": infer_chat_title(str(user_messages[0].get("content") or "")) if user_messages else "Novo chat",
+                "created_at": first_timestamp,
+                "updated_at": last_timestamp,
+                "turn_count": len([message for message in messages if message.get("role") == "assistant"]),
+                "message_count": len(messages),
+                "last_message_preview": message_preview(messages),
+            }
+        )
+    return discovered
+
+
+def infer_chat_title(message: str) -> str:
+    cleaned = re.sub(r"\s+", " ", message).strip()
+    if not cleaned:
+        return "Novo chat"
+    title = cleaned[:72].strip()
+    if len(cleaned) > 72:
+        title = title.rstrip(" .,;:!?") + "..."
+    return title or "Novo chat"
+
+
+def message_preview(messages: list[dict[str, Any]]) -> str:
+    if not messages:
+        return ""
+    content = str(messages[-1].get("content") or "").strip()
+    if len(content) <= 120:
+        return content
+    return content[:117].rstrip() + "..."
+
+
+def get_chat_session_summary(
     current_user: AuthenticatedUserContext,
     session_id: str,
-) -> list[dict[str, Any]]:
-    path = session_memory_path(current_user, session_id)
+) -> dict[str, Any] | None:
+    for session in read_chat_sessions_index(current_user):
+        if str(session.get("session_id") or "").strip() == session_id:
+            return session
+    return None
+
+
+def ensure_chat_session_summary(
+    current_user: AuthenticatedUserContext,
+    session_id: str,
+    *,
+    title: str | None = None,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    ensure_user_storage(current_user)
+    sessions = read_chat_sessions_index(current_user)
+    existing = None
+    for session in sessions:
+        if str(session.get("session_id") or "").strip() == session_id:
+            existing = dict(session)
+            break
+
+    now = datetime.now(UTC).isoformat()
+    effective_messages = messages if messages is not None else load_chat_messages(current_user, session_id)
+    summary = existing or {
+        "session_id": session_id,
+        "title": "Novo chat",
+        "created_at": now,
+        "updated_at": now,
+        "turn_count": 0,
+        "message_count": 0,
+        "last_message_preview": "",
+    }
+    if title:
+        summary["title"] = title[:120]
+    elif not summary.get("title"):
+        summary["title"] = "Novo chat"
+
+    summary["updated_at"] = now if existing else summary["updated_at"]
+    summary["turn_count"] = len([message for message in effective_messages if message.get("role") == "assistant"])
+    summary["message_count"] = len(effective_messages)
+    summary["last_message_preview"] = message_preview(effective_messages)
+
+    next_sessions = [
+        session for session in sessions if str(session.get("session_id") or "").strip() != session_id
+    ]
+    next_sessions.append(summary)
+    next_sessions.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    write_chat_sessions_index(current_user, next_sessions)
+    return summary
+
+
+def create_or_update_chat_session(
+    current_user: AuthenticatedUserContext,
+    session_id: str,
+    *,
+    title: str | None = None,
+) -> dict[str, Any]:
+    clean_session_id = safe_session_id(session_id)
+    return ensure_chat_session_summary(current_user, clean_session_id, title=title)
+
+
+def delete_chat_session_storage(current_user: AuthenticatedUserContext, session_id: str) -> None:
+    clean_session_id = safe_session_id(session_id)
+    session_memory_path(current_user, clean_session_id).unlink(missing_ok=True)
+    legacy_session_memory_path(current_user, clean_session_id).unlink(missing_ok=True)
+    next_sessions = [
+        session
+        for session in read_chat_sessions_index(current_user)
+        if str(session.get("session_id") or "").strip() != clean_session_id
+    ]
+    write_chat_sessions_index(current_user, next_sessions)
+
+
+def parse_persisted_messages(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    turns: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as input_file:
         for line in input_file:
             line = line.strip()
             if not line:
                 continue
             try:
-                turns.append(json.loads(line))
+                payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(payload, dict):
+                continue
+
+            timestamp = str(payload.get("timestamp") or datetime.now(UTC).isoformat())
+            if payload.get("role") in {"user", "assistant"} and payload.get("content"):
+                messages.append(
+                    {
+                        "role": str(payload["role"]),
+                        "content": str(payload["content"]),
+                        "timestamp": timestamp,
+                        "references": payload.get("references") if isinstance(payload.get("references"), list) else [],
+                    }
+                )
+                continue
+
+            user_content = str(payload.get("user") or "").strip()
+            assistant_content = str(payload.get("assistant") or "").strip()
+            references = payload.get("references") if isinstance(payload.get("references"), list) else []
+            if user_content:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": user_content,
+                        "timestamp": timestamp,
+                        "references": [],
+                    }
+                )
+            if assistant_content:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_content,
+                        "timestamp": timestamp,
+                        "references": references,
+                    }
+                )
+    return messages
+
+
+def load_chat_messages(
+    current_user: AuthenticatedUserContext,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    path = session_memory_path(current_user, session_id)
+    if path.exists():
+        return parse_persisted_messages(path)
+
+    legacy_path = legacy_session_memory_path(current_user, session_id)
+    if not legacy_path.exists():
+        return []
+
+    messages = parse_persisted_messages(legacy_path)
+    if messages:
+        chat_sessions_data_dir(current_user).mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as output:
+            for message in messages:
+                output.write(json.dumps(message, ensure_ascii=False) + "\n")
+        legacy_path.unlink(missing_ok=True)
+    return messages
+
+
+def load_session_memory(
+    current_user: AuthenticatedUserContext,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    messages = load_chat_messages(current_user, session_id)
+    turns: list[dict[str, Any]] = []
+    pending_user = ""
+    pending_timestamp = ""
+    for message in messages:
+        role = str(message.get("role") or "")
+        if role == "user":
+            pending_user = str(message.get("content") or "")
+            pending_timestamp = str(message.get("timestamp") or "")
+            continue
+        if role == "assistant":
+            turns.append(
+                {
+                    "timestamp": str(message.get("timestamp") or pending_timestamp or datetime.now(UTC).isoformat()),
+                    "user": pending_user,
+                    "assistant": str(message.get("content") or ""),
+                    "references": message.get("references") if isinstance(message.get("references"), list) else [],
+                }
+            )
+            pending_user = ""
+            pending_timestamp = ""
     return turns[-CHAT_MEMORY_TURNS:]
 
 
@@ -1598,21 +1932,54 @@ def save_session_turn(
     references: list[SearchResult],
 ) -> None:
     ensure_user_storage(current_user)
-    record = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "user": user_message,
-        "assistant": assistant_message,
-        "references": [
-            {
-                "document_id": reference.document_id,
-                "title": reference.metadata.get("title") or reference.suggested_name,
-                "markdown_path": reference.markdown_path,
-            }
-            for reference in references
-        ],
-    }
-    with session_memory_path(current_user, session_id).open("a", encoding="utf-8") as output:
-        output.write(json.dumps(record, ensure_ascii=False) + "\n")
+    clean_session_id = safe_session_id(session_id)
+    now = datetime.now(UTC).isoformat()
+    serialized_references = [
+        {
+            "document_id": reference.document_id,
+            "title": reference.metadata.get("title") or reference.suggested_name,
+            "markdown_path": reference.markdown_path,
+            "pdf_path": reference.pdf_path,
+            "classification": reference.classification,
+            "suggested_name": reference.suggested_name,
+        }
+        for reference in references
+    ]
+    chat_sessions_data_dir(current_user).mkdir(parents=True, exist_ok=True)
+    with session_memory_path(current_user, clean_session_id).open("a", encoding="utf-8") as output:
+        output.write(
+            json.dumps(
+                {
+                    "role": "user",
+                    "content": user_message,
+                    "timestamp": now,
+                    "references": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        output.write(
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "content": assistant_message,
+                    "timestamp": now,
+                    "references": serialized_references,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    summary = get_chat_session_summary(current_user, clean_session_id)
+    current_title = str(summary.get("title") or "").strip() if summary else ""
+    ensure_chat_session_summary(
+        current_user,
+        clean_session_id,
+        title=infer_chat_title(user_message) if not current_title or current_title.lower() == "novo chat" else current_title,
+        messages=load_chat_messages(current_user, clean_session_id),
+    )
 
 
 def build_memory_summary(turns: list[dict[str, Any]]) -> str:

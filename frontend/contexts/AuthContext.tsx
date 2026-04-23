@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
 import { useRouter } from "next/router";
 import { onIdTokenChanged, type User } from "firebase/auth";
 import { firebaseAuth } from "../lib/firebase";
@@ -61,18 +61,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [router]);
 
-  async function getCurrentToken(): Promise<string> {
+  const getCurrentToken = useCallback(async (): Promise<string> => {
     const currentUser = firebaseAuth?.currentUser;
     if (!currentUser) throw new Error("Sessão expirada. Entre novamente.");
     return currentUser.getIdToken();
-  }
+  }, []);
 
-  async function logout() {
+  const logout = useCallback(async () => {
     if (firebaseAuth) {
       await firebaseAuth.signOut();
       router.push("/login");
     }
-  }
+  }, [router]);
 
   return (
     <AuthContext.Provider value={{ 

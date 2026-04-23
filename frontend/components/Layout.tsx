@@ -26,19 +26,19 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}
-      <aside className="w-72 glass-panel border-r border-white/40 flex flex-col fixed h-full z-20">
-        <div className="p-8">
-          <div className="flex items-center gap-3 mb-10">
-            <div className="w-10 h-10 bg-ink rounded-xl flex items-center justify-center shadow-lg">
-              <span className="text-amberline font-bold text-xl">N</span>
+      <aside className="w-64 glass-panel border-r border-white/40 flex flex-col fixed h-full z-20">
+        <div className="p-6">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-8 h-8 bg-ink rounded-xl flex items-center justify-center shadow-lg">
+              <span className="text-amberline font-bold text-lg">N</span>
             </div>
             <div>
-              <h1 className="font-bold text-xl tracking-tight">NEXUS</h1>
-              <p className="eyebrow !text-[0.6rem]">Archive OS v1.0</p>
+              <h1 className="font-bold text-lg tracking-tight">NEXUS</h1>
+              <p className="eyebrow !text-[0.55rem]">Archive OS v1.0</p>
             </div>
           </div>
 
-          <nav className="space-y-2">
+          <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = router.pathname === item.path;
               return (
@@ -55,19 +55,19 @@ export default function Layout({ children }: LayoutProps) {
           </nav>
         </div>
 
-        <div className="mt-auto p-6 border-t border-white/20">
-          <div className="flex items-center gap-3 mb-6 p-2">
-            <div className="w-10 h-10 rounded-full bg-slateblue/20 flex items-center justify-center border border-slateblue/30">
-              <span className="text-slateblue font-bold uppercase">{user?.email?.charAt(0) || "U"}</span>
+        <div className="mt-auto p-5 border-t border-white/20">
+          <div className="flex items-center gap-3 mb-4 p-1">
+            <div className="w-8 h-8 rounded-full bg-slateblue/20 flex items-center justify-center border border-slateblue/30">
+              <span className="text-slateblue font-bold uppercase text-sm">{user?.email?.charAt(0) || "U"}</span>
             </div>
             <div className="overflow-hidden">
               <p className="text-xs font-bold truncate">{user?.email || "Usuário"}</p>
-              <p className="eyebrow !text-[0.55rem]">Operador Online</p>
+              <p className="eyebrow !text-[0.5rem]">Operador Online</p>
             </div>
           </div>
           <button 
             onClick={logout}
-            className="w-full secondary-button !py-2 text-xs flex items-center justify-center gap-2"
+            className="w-full secondary-button !py-1.5 text-xs flex items-center justify-center gap-2"
           >
             <LogoutIcon />
             Sair do Sistema
@@ -76,8 +76,8 @@ export default function Layout({ children }: LayoutProps) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 ml-72 p-10 min-h-screen relative">
-        <div className="max-w-6xl mx-auto relative z-10">
+      <main className="flex-1 ml-64 p-6 md:p-8 min-h-screen relative">
+        <div className="max-w-5xl mx-auto relative z-10">
           {children}
         </div>
         

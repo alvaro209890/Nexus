@@ -27,6 +27,27 @@ export type ChatTurn = {
   content: string;
 };
 
+export type PersistedChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  references: Array<Record<string, unknown>>;
+};
+
+export type ChatSessionSummary = {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  turn_count: number;
+  message_count: number;
+  last_message_preview: string;
+};
+
+export type ChatSessionDetail = ChatSessionSummary & {
+  messages: PersistedChatMessage[];
+};
+
 export type ChatResponse = {
   answer: string;
   references: SearchResult[];
@@ -165,6 +186,37 @@ export async function sendChatMessage(
     body: JSON.stringify({ message, history, session_id: sessionId, limit: 5 })
   });
   return parseJsonResponse<ChatResponse>(response);
+}
+
+export async function listChatSessions(token: string): Promise<ChatSessionSummary[]> {
+  const response = await fetch(`${resolveApiBase()}/chat-sessions`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<ChatSessionSummary[]>(response);
+}
+
+export async function createChatSession(token: string, title?: string): Promise<ChatSessionSummary> {
+  const response = await fetch(`${resolveApiBase()}/chat-sessions`, {
+    method: "POST",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify(title ? { title } : {})
+  });
+  return parseJsonResponse<ChatSessionSummary>(response);
+}
+
+export async function getChatSession(sessionId: string, token: string): Promise<ChatSessionDetail> {
+  const response = await fetch(`${resolveApiBase()}/chat-sessions/${sessionId}`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<ChatSessionDetail>(response);
+}
+
+export async function deleteChatSession(sessionId: string, token: string): Promise<{ session_id: string; status: string }> {
+  const response = await fetch(`${resolveApiBase()}/chat-sessions/${sessionId}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<{ session_id: string; status: string }>(response);
 }
 
 export async function listDocuments(token: string, limit = 20): Promise<DocumentRecord[]> {
