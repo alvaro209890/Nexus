@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { DocumentRecord, downloadDocument, listDocuments } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
@@ -22,27 +22,31 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState("");
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      const docs = await listDocuments(token, 500);
+      setDocuments(docs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao carregar os arquivos.");
+    } finally {
+      setLoading(false);
+    }
+  }, [getCurrentToken]);
 
   useEffect(() => {
     if (user && authProfile) {
-      void (async () => {
-        setLoading(true);
-        setError("");
-        try {
-          const token = await getCurrentToken();
-          const docs = await listDocuments(token, 500);
-          setDocuments(docs);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Falha ao carregar os arquivos.");
-        } finally {
-          setLoading(false);
-        }
-      })();
+      void loadData();
     }
-  }, [user, authProfile, getCurrentToken]);
+  }, [user, authProfile, loadData]);
 
   function selectFolder(path: string) {
     setCurrentPath(path);
+    setSelectedDocId(null);
     setExpandedPaths((current) => {
       const next = new Set(current);
       next.add("");
@@ -66,20 +70,6 @@ export default function FilesPage() {
     });
   }
 
-  async function refreshDocuments() {
-    setLoading(true);
-    setError("");
-    try {
-      const token = await getCurrentToken();
-      const docs = await listDocuments(token, 500);
-      setDocuments(docs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao carregar os arquivos.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleDownload(document: DocumentRecord) {
     setDownloadingId(document.document_id);
     setError("");
@@ -93,16 +83,27 @@ export default function FilesPage() {
     }
   }
 
-  const folderMap = buildFolderMap(documents);
+  const folderMap = useMemo(() => buildFolderMap(documents), [documents]);
   const currentNode = folderMap.get(currentPath) ?? folderMap.get("")!;
-  const folderChildren = currentNode.childPaths
-    .map((path) => folderMap.get(path))
-    .filter((folder): folder is FolderNode => Boolean(folder))
-    .filter((folder) => folder.name.toLowerCase().includes(query.trim().toLowerCase()))
-    .sort((left, right) => left.name.localeCompare(right.name, "pt-BR"));
-  const visibleFiles = currentNode.files
-    .filter((document) => matchesQuery(document, query))
-    .sort((left, right) => right.uploaded_at.localeCompare(left.uploaded_at));
+  
+  const folderChildren = useMemo(() => {
+    return currentNode.childPaths
+      .map((path) => folderMap.get(path))
+      .filter((folder): folder is FolderNode => Boolean(folder))
+      .filter((folder) => folder.name.toLowerCase().includes(query.trim().toLowerCase()))
+      .sort((left, right) => left.name.localeCompare(right.name, "pt-BR"));
+  }, [currentNode, folderMap, query]);
+
+  const visibleFiles = useMemo(() => {
+    return currentNode.files
+      .filter((document) => matchesQuery(document, query))
+      .sort((left, right) => right.uploaded_at.localeCompare(left.uploaded_at));
+  }, [currentNode, query]);
+
+  const selectedDoc = useMemo(() => {
+    return documents.find(d => d.document_id === selectedDocId) || null;
+  }, [documents, selectedDocId]);
+
   const breadcrumbs = buildBreadcrumbs(currentPath);
   const totalSize = documents.reduce((sum, document) => sum + getDocumentSize(document), 0);
 
@@ -110,36 +111,41 @@ export default function FilesPage() {
     <div className="space-y-6">
       <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <p className="eyebrow mb-1.5">Explorer</p>
+          <p className="eyebrow mb-1.5 flex items-center gap-2">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            Explorer
+          </p>
           <h1 className="text-2xl font-bold tracking-tight">Gerenciador de Arquivos</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slateblue">
-            Navegue pelas pastas do seu acervo privado, visualize os arquivos organizados pela IA e faça download do PDF original.
+          <p className="mt-1.5 max-w-3xl text-sm text-slateblue leading-relaxed">
+            Navegue pelo repositório privado estruturado pela IA. Visualize metadados, resumos e baixe originais.
           </p>
         </div>
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-          <MetricCard label="Arquivos" value={String(documents.length)} help="PDFs no seu espaço" />
-          <MetricCard label="Pastas" value={String(Math.max(folderMap.size - 1, 0))} help="Estrutura de pastas" />
-          <MetricCard label="Volume" value={formatBytes(totalSize)} help="Total do acervo" />
+        <div className="grid grid-cols-3 gap-3">
+          <MetricCard label="Arquivos" value={String(documents.length)} icon={<DocsIcon />} />
+          <MetricCard label="Pastas" value={String(Math.max(folderMap.size - 1, 0))} icon={<FolderIcon />} />
+          <MetricCard label="Volume" value={formatBytes(totalSize)} icon={<StorageIcon />} />
         </div>
       </header>
 
-      <GlassCard className="!p-4">
+      <GlassCard className="!p-3 border-white/60">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slateblue">
+          <div className="flex flex-wrap items-center gap-1 text-[0.7rem] font-bold text-slateblue/80">
             <button
               type="button"
               onClick={() => selectFolder("")}
-              className={`rounded-full px-2.5 py-1 transition-colors ${currentPath === "" ? "bg-ink text-white" : "bg-white/70 hover:bg-white"}`}
+              className={`rounded-md px-2 py-1 transition-all ${currentPath === "" ? "bg-ink text-white shadow-md" : "hover:bg-white/60"}`}
             >
-              Minha unidade
+              Raiz
             </button>
             {breadcrumbs.map((crumb) => (
-              <div key={crumb.path} className="flex items-center gap-2">
-                <span className="text-slateblue/35">/</span>
+              <div key={crumb.path} className="flex items-center gap-1">
+                <span className="text-slateblue/30">/</span>
                 <button
                   type="button"
                   onClick={() => selectFolder(crumb.path)}
-                  className={`rounded-full px-2.5 py-1 transition-colors ${crumb.path === currentPath ? "bg-ink text-white" : "bg-white/70 hover:bg-white"}`}
+                  className={`rounded-md px-2 py-1 transition-all truncate max-w-[120px] ${crumb.path === currentPath ? "bg-ink text-white shadow-md" : "hover:bg-white/60"}`}
                 >
                   {crumb.label}
                 </button>
@@ -147,34 +153,50 @@ export default function FilesPage() {
             ))}
           </div>
 
-          <div className="flex flex-col gap-2.5 sm:flex-row">
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="field min-w-[240px] !rounded-full !py-2.5"
-              placeholder="Filtrar arquivos..."
-            />
-            <Button variant="secondary" onClick={() => void refreshDocuments()}>
-              Atualizar
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex-1 lg:min-w-[280px]">
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="field !rounded-xl !py-2 !pl-9 !text-xs"
+                placeholder="Pesquisar título, autor, tag..."
+              />
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slateblue/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <Button variant="secondary" className="!py-2 !px-4 !text-xs" onClick={() => void loadData()}>
+              <RefreshIcon />
             </Button>
           </div>
         </div>
       </GlassCard>
 
       {error && (
-        <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-xs font-semibold text-red-700">
-          {error}
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+             </svg>
+          </div>
+          <div>
+            <p className="text-xs font-bold text-red-800 uppercase tracking-wider">Erro de Operação</p>
+            <p className="text-sm font-medium text-red-700 mt-0.5">{error}</p>
+          </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <GlassCard className="!p-0 overflow-hidden">
-          <div className="border-b border-white/50 px-4 py-3">
-            <p className="eyebrow">Pastas</p>
-            <p className="mt-1.5 text-xs text-slateblue">Estrutura privada do usuário.</p>
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[250px_minmax(0,1fr)_300px]">
+        {/* Sidebar: Folder Tree */}
+        <GlassCard className="!p-0 overflow-hidden flex flex-col h-[65vh] border-white/50">
+          <div className="border-b border-white/10 bg-slate-950/30 px-4 py-3">
+            <p className="eyebrow flex items-center justify-between">
+              Diretório
+              <FolderTreeIcon />
+            </p>
           </div>
 
-          <div className="max-h-[70vh] overflow-y-auto px-2 py-3">
+          <div className="flex-1 overflow-y-auto px-2 py-4 custom-scrollbar">
             <FolderTree
               currentPath={currentPath}
               expandedPaths={expandedPaths}
@@ -186,120 +208,188 @@ export default function FilesPage() {
           </div>
         </GlassCard>
 
-        <div className="space-y-4">
-          <GlassCard className="overflow-hidden !p-0">
-            <div className="border-b border-white/50 px-4 py-3">
-              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="eyebrow">Conteúdo Atual</p>
-                  <h2 className="mt-1 text-lg font-bold">
-                    {currentPath ? currentNode.name : "Minha unidade"}
-                  </h2>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <StatusChip label={`${folderChildren.length} Pastas`} variant="info" />
-                  <StatusChip label={`${visibleFiles.length} Arquivos`} variant="success" />
-                </div>
+        {/* Main: Content Grid/Table */}
+        <div className="space-y-4 min-w-0">
+          <GlassCard className="overflow-hidden !p-0 h-[65vh] flex flex-col border-white/50">
+            <div className="border-b border-white/10 bg-slate-950/30 px-4 py-3 flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <p className="eyebrow truncate">Contexto: {currentPath || "Raiz"}</p>
+              </div>
+              <div className="flex gap-2">
+                <StatusChip label={`${folderChildren.length}p`} variant="info" />
+                <StatusChip label={`${visibleFiles.length}f`} variant="success" />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 border-b border-white/50 p-4 md:grid-cols-2 xl:grid-cols-3">
-              {folderChildren.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slateblue/20 bg-white/40 p-4 text-xs text-slateblue/60">
-                  Nenhuma subpasta nessa seleção.
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {/* Subfolders Grid */}
+              {folderChildren.length > 0 && (
+                <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 border-b border-white/40 bg-white/10">
+                  {folderChildren.map((folder) => (
+                    <button
+                      key={folder.path}
+                      type="button"
+                      onClick={() => selectFolder(folder.path)}
+                      className="file-folder-card group"
+                    >
+                      <div className="file-folder-icon group-hover:scale-105 transition-transform shadow-sm">
+                        <FolderIcon />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-bold text-ink group-hover:text-amberline transition-colors">{folder.name}</p>
+                        <p className="mt-0.5 text-[0.6rem] font-bold uppercase tracking-[0.1em] text-slateblue/40 flex items-center gap-1">
+                          <DocsIcon className="w-2.5 h-2.5" />
+                          {countNestedFiles(folderMap, folder.path)} itens
+                        </p>
+                      </div>
+                    </button>
+                  ))}
                 </div>
-              ) : (
-                folderChildren.map((folder) => (
-                  <button
-                    key={folder.path}
-                    type="button"
-                    onClick={() => selectFolder(folder.path)}
-                    className="file-folder-card text-left"
-                  >
-                    <div className="file-folder-icon">
-                      <FolderIcon />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-bold text-ink">{folder.name}</p>
-                      <p className="mt-1 text-[0.6rem] font-bold uppercase tracking-[0.18em] text-slateblue/55">
-                        {countNestedFiles(folderMap, folder.path)} arquivos
-                      </p>
-                    </div>
-                  </button>
-                ))
               )}
-            </div>
 
-            <div className="overflow-x-auto">
-              <table className="nexus-table">
-                <thead>
-                  <tr>
-                    <th>Arquivo</th>
-                    <th>Título</th>
-                    <th>Classificação</th>
-                    <th>Data</th>
-                    <th>Tamanho</th>
-                    <th>Ação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    Array.from({ length: 4 }).map((_, index) => (
-                      <tr key={`skeleton-${index}`}>
-                        <td colSpan={6}>
-                          <div className="h-8 animate-pulse rounded-lg bg-slateblue/5" />
-                        </td>
-                      </tr>
-                    ))
-                  ) : visibleFiles.length === 0 ? (
+              {/* Files Table */}
+              <div className="min-w-full">
+                <table className="nexus-table !border-0">
+                  <thead className="sticky top-0 bg-slate-950/90 backdrop-blur-sm z-10 border-b border-white/10">
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-sm text-slateblue/50">
-                        Nenhum arquivo encontrado nesta pasta.
-                      </td>
+                      <th className="w-12 text-center">Icon</th>
+                      <th>Arquivo / Metadados</th>
+                      <th className="w-24 text-right">Data</th>
                     </tr>
-                  ) : (
-                    visibleFiles.map((document) => (
-                      <tr key={document.document_id}>
-                        <td>
-                          <div className="flex items-center gap-2.5">
-                            <div className="file-row-icon">
-                              <PdfIcon />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="truncate text-xs font-bold">{document.original_name}</p>
-                              <p className="truncate text-[0.6rem] font-semibold uppercase tracking-[0.14em] text-slateblue/55">
-                                {document.suggested_name}
-                              </p>
-                            </div>
+                  </thead>
+                  <tbody className="divide-y divide-white/40">
+                    {loading ? (
+                      Array.from({ length: 6 }).map((_, index) => (
+                        <tr key={`skeleton-${index}`}>
+                          <td colSpan={3} className="px-4 py-4">
+                            <div className="h-10 animate-pulse rounded-lg bg-slateblue/5" />
+                          </td>
+                        </tr>
+                      ))
+                    ) : visibleFiles.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="py-24 text-center">
+                          <div className="flex flex-col items-center opacity-30 italic">
+                            <EmptyFolderIcon />
+                            <p className="text-sm mt-3 font-medium">Pasta vazia ou sem correspondências</p>
                           </div>
                         </td>
-                        <td className="max-w-[200px]">
-                          <p className="truncate text-xs font-semibold text-ink/80">{document.title}</p>
-                          <p className="mt-1 truncate text-[0.65rem] text-slateblue/60">{document.summary || "Sem resumo disponível."}</p>
-                        </td>
-                        <td>
-                          <StatusChip label={document.classification || "arquivo"} variant="info" />
-                        </td>
-                        <td className="text-[0.65rem]">{formatDate(document.uploaded_at)}</td>
-                        <td className="text-[0.65rem] font-semibold text-slateblue">{formatBytes(getDocumentSize(document))}</td>
-                        <td>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            className="!px-3 !py-1.5 text-[0.65rem]"
-                            isLoading={downloadingId === document.document_id}
-                            onClick={() => void handleDownload(document)}
-                          >
-                            Baixar
-                          </Button>
-                        </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : (
+                      visibleFiles.map((document) => (
+                        <tr 
+                          key={document.document_id}
+                          onClick={() => setSelectedDocId(document.document_id)}
+                          className={`cursor-pointer transition-all ${selectedDocId === document.document_id ? "bg-amberline/5 border-l-2 border-l-amberline shadow-inner" : "hover:bg-white/40"}`}
+                        >
+                          <td className="text-center">
+                            <div className={`mx-auto w-8 h-8 rounded-lg flex items-center justify-center ${selectedDocId === document.document_id ? "bg-amberline/20 text-amber-800" : "bg-slateblue/5 text-slateblue/50"}`}>
+                              <PdfIcon />
+                            </div>
+                          </td>
+                          <td className="py-3 px-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-bold text-ink">{document.original_name}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="text-[0.6rem] font-bold uppercase text-slateblue/40 tracking-wider truncate max-w-[150px]">{document.suggested_name}</span>
+                                <span className="text-[0.6rem] px-1.5 py-0.5 rounded-md bg-slate-800/80 border border-white/10 text-slateblue/60 font-bold">{document.classification || "PDF"}</span>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="text-right px-4">
+                            <p className="text-[0.65rem] font-bold text-slateblue/50">{formatDate(document.uploaded_at)}</p>
+                            <p className="text-[0.6rem] font-extrabold text-amberline uppercase mt-1">{formatBytes(getDocumentSize(document))}</p>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </GlassCard>
+        </div>
+
+        {/* Detail Panel: Document Info */}
+        <div className="hidden xl:block">
+           <GlassCard className="h-[65vh] flex flex-col p-0 overflow-hidden border-white/50 sticky top-0">
+              {selectedDoc ? (
+                <>
+                  <div className="border-b border-white/60 bg-amberline/10 px-5 py-4 shrink-0">
+                    <p className="eyebrow text-sky-200 mb-1">Ficha Técnica</p>
+                    <h3 className="text-sm font-bold text-ink line-clamp-2 leading-tight">{selectedDoc.original_name}</h3>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-5 space-y-5 custom-scrollbar bg-slate-950/20">
+                    <div>
+                      <p className="eyebrow !text-[0.6rem] mb-2 opacity-60">Título Identificado</p>
+                      <p className="text-xs font-bold text-ink leading-relaxed">{selectedDoc.title || "Sem título detectado"}</p>
+                    </div>
+
+                    {selectedDoc.summary && (
+                      <div>
+                        <p className="eyebrow !text-[0.6rem] mb-2 opacity-60">Resumo Gerencial</p>
+                        <div className="p-3 rounded-xl bg-slate-800/70 border border-white/10 text-[0.7rem] text-ink/80 italic leading-relaxed shadow-sm">
+                          &quot;{selectedDoc.summary}&quot;
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="eyebrow !text-[0.6rem] mb-1.5 opacity-60">Autor / Origem</p>
+                        <p className="text-xs font-bold text-slateblue truncate">{selectedDoc.author || "Não informado"}</p>
+                      </div>
+                      <div>
+                        <p className="eyebrow !text-[0.6rem] mb-1.5 opacity-60">Ano Base</p>
+                        <p className="text-xs font-bold text-slateblue">{selectedDoc.year || "--"}</p>
+                      </div>
+                    </div>
+
+                    {selectedDoc.tags && selectedDoc.tags.length > 0 && (
+                      <div>
+                        <p className="eyebrow !text-[0.6rem] mb-2 opacity-60">Segmentação & Tags</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedDoc.tags.map((tag, i) => (
+                            <span key={i} className="text-[0.6rem] px-2 py-0.5 rounded-full bg-slateblue/10 border border-slateblue/20 text-slateblue font-bold hover:bg-slateblue/20 transition-colors">#{tag}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedDoc.technologies && selectedDoc.technologies.length > 0 && (
+                      <div>
+                        <p className="eyebrow !text-[0.6rem] mb-2 opacity-60">Tópicos Relacionados</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedDoc.technologies.map((tech, i) => (
+                            <span key={i} className="text-[0.6rem] px-2 py-0.5 rounded-md bg-ink/5 border border-ink/10 text-ink/60 font-semibold">{tech}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-4 bg-slate-950/40 border-t border-white/10 shrink-0">
+                    <Button 
+                      className="w-full !rounded-xl !py-3 flex items-center justify-center gap-2"
+                      isLoading={downloadingId === selectedDoc.document_id}
+                      onClick={() => handleDownload(selectedDoc)}
+                    >
+                      <DownloadIcon />
+                      Baixar PDF Original
+                    </Button>
+                    <p className="text-[0.55rem] text-center mt-2 font-bold text-slateblue/40 uppercase tracking-widest">Acesso seguro via Vault Nexus</p>
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center opacity-30">
+                  <div className="w-16 h-16 rounded-full bg-slateblue/10 flex items-center justify-center mb-4">
+                    <InfoIcon className="w-8 h-8 text-slateblue" />
+                  </div>
+                  <p className="text-sm font-bold italic text-slateblue">Selecione um arquivo para visualizar detalhes avançados e metadados da IA.</p>
+                </div>
+              )}
+           </GlassCard>
         </div>
       </div>
     </div>
@@ -457,7 +547,7 @@ function FolderTree({
           className="folder-tree-label"
         >
           <FolderIcon />
-          <span className="truncate">{path ? node.name : "Minha unidade"}</span>
+          <span className="truncate">{path ? node.name : "Unidade"}</span>
           <span className="folder-tree-count">{nestedCount}</span>
         </button>
       </div>
@@ -480,20 +570,32 @@ function FolderTree({
   );
 }
 
-function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
+function MetricCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
   return (
-    <div className="metric-card min-w-[180px]">
-      <p className="eyebrow mb-2">{label}</p>
-      <p className="font-mono text-3xl font-bold text-ink">{value}</p>
-      <p className="mt-3 text-xs font-medium text-slateblue/70">{help}</p>
+    <div className="metric-card !p-3 flex items-center gap-3">
+      <div className="w-8 h-8 rounded-lg bg-slate-800/70 shadow-inner flex items-center justify-center text-slateblue/60 shrink-0">
+         {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="eyebrow !text-[0.55rem] mb-0.5 opacity-60">{label}</p>
+        <p className="font-mono text-lg font-bold text-ink leading-none">{value}</p>
+      </div>
     </div>
   );
 }
 
 function FolderIcon() {
   return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+    </svg>
+  );
+}
+
+function FolderTreeIcon() {
+  return (
+    <svg className="h-3.5 w-3.5 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
     </svg>
   );
 }
@@ -508,9 +610,59 @@ function ChevronIcon() {
 
 function PdfIcon() {
   return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 3v5h5M8 14h8M8 18h5" />
+    </svg>
+  );
+}
+
+function DocsIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
+function StorageIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 1.1.9 2 2 2h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 10h16M4 14h16" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+    </svg>
+  );
+}
+
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  );
+}
+
+function EmptyFolderIcon() {
+  return (
+    <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M12 11v4m-2-2h4" />
     </svg>
   );
 }

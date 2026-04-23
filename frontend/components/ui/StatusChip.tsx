@@ -5,9 +5,9 @@ interface StatusChipProps {
 
 export function StatusChip({ label, variant = "warning" }: StatusChipProps) {
   const variantStyles = {
-    warning: "bg-amber-100/50 border-amber-200 text-amber-900",
-    success: "bg-emerald-100/50 border-emerald-200 text-emerald-900",
-    info: "bg-blue-100/50 border-blue-200 text-blue-900",
+    warning: "bg-amber-400/10 border-amber-300/30 text-amber-200",
+    success: "bg-emerald-400/10 border-emerald-300/30 text-emerald-200",
+    info: "bg-sky-400/10 border-sky-300/30 text-sky-200",
   };
 
   return (

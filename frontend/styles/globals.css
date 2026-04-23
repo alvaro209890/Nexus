@@ -5,25 +5,26 @@
 @tailwind utilities;
 
 :root {
-  --ink: #101820;
-  --porcelain: #f7f3ea;
-  --amberline: #eca72c;
-  --moss: #6a8d73;
-  --slateblue: #385170;
-  --glass-white: rgba(255, 255, 255, 0.72);
-  --glass-white-thick: rgba(255, 255, 255, 0.86);
+  --ink: #0a0f14;
+  --porcelain: #0f172a;
+  --amberline: #38bdf8;
+  --moss: #1e293b;
+  --slateblue: #94a3b8;
+  --accent-blue: #0ea5e9;
+  --glass-white: rgba(15, 23, 42, 0.72);
+  --glass-white-thick: rgba(30, 41, 59, 0.86);
 }
 
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--slateblue) transparent;
+  scrollbar-color: var(--accent-blue) transparent;
 }
 
 /* Custom Scrollbar for Chrome/Safari/Edge */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -31,12 +32,12 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(56, 81, 112, 0.2);
+  background: rgba(14, 165, 233, 0.2);
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(56, 81, 112, 0.4);
+  background: rgba(14, 165, 233, 0.5);
 }
 
 html,
@@ -44,13 +45,34 @@ body {
   min-height: 100%;
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(236, 167, 44, 0.28), transparent 34rem),
-    radial-gradient(circle at 90% 10%, rgba(106, 141, 115, 0.22), transparent 30rem),
-    linear-gradient(135deg, #f7f3ea 0%, #edf2ef 45%, #dce5e2 100%);
-  color: var(--ink);
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.15), transparent 40rem),
+    radial-gradient(circle at 90% 10%, rgba(56, 189, 248, 0.1), transparent 30rem),
+    #0a0f14;
+  color: #f8fafc;
   font-family: "IBM Plex Sans", sans-serif;
   font-size: 0.9375rem;
   overflow-x: hidden;
+}
+
+.text-ink,
+.text-ink\/80,
+.text-ink\/70,
+.text-ink\/60 {
+  color: #f8fafc;
+}
+
+.text-slateblue,
+.text-slateblue\/80,
+.text-slateblue\/75,
+.text-slateblue\/70,
+.text-slateblue\/60,
+.text-slateblue\/55,
+.text-slateblue\/50,
+.text-slateblue\/45,
+.text-slateblue\/40,
+.text-slateblue\/35,
+.text-slateblue\/30 {
+  color: #94a3b8;
 }
 
 button,
@@ -60,33 +82,34 @@ textarea {
 }
 
 .glass-panel {
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  background: var(--glass-white-thick);
-  box-shadow: 0 24px 80px rgba(16, 24, 32, 0.14);
-  backdrop-filter: blur(24px);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  background: rgba(15, 23, 42, 0.8);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
 }
 
 .field {
   width: 100%;
   border-radius: 0.6rem;
-  border: 1px solid rgba(56, 81, 112, 0.18);
-  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.6);
   padding: 0.6rem 0.85rem;
-  color: var(--ink);
+  color: #f8fafc;
   outline: none;
   transition: all 180ms ease;
 }
 
 .field:focus {
-  border-color: var(--amberline);
-  box-shadow: 0 0 0 4px rgba(236, 167, 44, 0.18);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+  background: rgba(15, 23, 42, 0.9);
 }
 
 .primary-button {
-  border-radius: 999px;
-  background: var(--ink);
+  border-radius: 0.6rem;
+  background: var(--accent-blue);
   color: white;
-  font-weight: 700;
+  font-weight: 600;
   padding: 0.65rem 1rem;
   font-size: 0.875rem;
   transition: all 180ms ease;
@@ -94,26 +117,28 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.3);
 }
 
 .primary-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 32px rgba(16, 24, 32, 0.2);
-  filter: brightness(1.2);
+  box-shadow: 0 6px 20px rgba(14, 165, 233, 0.4);
+  background: #0284c7;
 }
 
 .primary-button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none;
 }
 
 .secondary-button {
-  border-radius: 999px;
-  border: 1px solid rgba(16, 24, 32, 0.16);
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--ink);
-  font-weight: 700;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(30, 41, 59, 0.5);
+  color: #f1f5f9;
+  font-weight: 600;
   padding: 0.65rem 1rem;
   font-size: 0.875rem;
   transition: all 180ms ease;
@@ -124,60 +149,59 @@ textarea {
 }
 
 .secondary-button:hover {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(16, 24, 32, 0.3);
+  background: rgba(30, 41, 59, 0.8);
+  border-color: var(--accent-blue);
 }
 
 .eyebrow {
-  color: var(--slateblue);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.28em;
+  color: var(--accent-blue);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
 .hero-panel {
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.15);
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.58)),
-    radial-gradient(circle at 90% 15%, rgba(236, 167, 44, 0.34), transparent 24rem);
-  box-shadow: 0 24px 80px rgba(16, 24, 32, 0.14);
+    linear-gradient(135deg, rgba(15, 23, 42, 0.86), rgba(30, 41, 59, 0.58)),
+    radial-gradient(circle at 90% 15%, rgba(14, 165, 233, 0.2), transparent 24rem);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
 }
 
 .panel-card {
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 12px 40px rgba(16, 24, 32, 0.08);
+  background: rgba(30, 41, 59, 0.4);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
   padding: 1rem;
-  backdrop-filter: blur(24px);
+  backdrop-filter: blur(12px);
 }
 
 .metric-card {
-  border: 1px solid rgba(16, 24, 32, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.74);
+  background: rgba(15, 23, 42, 0.5);
   padding: 0.85rem;
-  backdrop-filter: blur(18px);
-  transition: transform 180ms ease;
+  transition: all 180ms ease;
 }
 
 .metric-card:hover {
+  border-color: var(--accent-blue);
+  background: rgba(15, 23, 42, 0.8);
   transform: translateY(-2px);
-  border-color: rgba(236, 167, 44, 0.3);
 }
 
 .status-chip {
   display: inline-flex;
   align-items: center;
   width: max-content;
-  border: 1px solid rgba(16, 24, 32, 0.1);
-  border-radius: 999px;
-  background: rgba(236, 167, 44, 0.18);
-  color: var(--ink);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  border-radius: 0.4rem;
+  background: rgba(14, 165, 233, 0.1);
+  color: var(--accent-blue);
   font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
   padding: 0.2rem 0.5rem;
   text-transform: uppercase;
 }
@@ -188,49 +212,48 @@ textarea {
   cursor: pointer;
   flex-direction: column;
   justify-content: center;
-  border: 1.5px dashed rgba(56, 81, 112, 0.34);
+  border: 2px dashed rgba(148, 163, 184, 0.2);
   border-radius: 0.75rem;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.8), rgba(247, 243, 234, 0.78)),
-    repeating-linear-gradient(135deg, rgba(16, 24, 32, 0.03) 0 1px, transparent 1px 12px);
+  background: rgba(15, 23, 42, 0.3);
   padding: 1rem;
-  transition: border-color 180ms ease, transform 180ms ease;
+  transition: all 180ms ease;
 }
 
 .drop-zone:hover {
-  border-color: var(--amberline);
-  transform: translateY(-1px);
+  border-color: var(--accent-blue);
+  background: rgba(14, 165, 233, 0.05);
 }
 
 .quick-card {
   min-height: 4rem;
-  border: 1px solid rgba(16, 24, 32, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.6rem;
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--ink);
+  background: rgba(30, 41, 59, 0.4);
+  color: #f1f5f9;
   font-weight: 600;
   line-height: 1.35;
   padding: 0.75rem;
   text-align: left;
-  transition: background 180ms ease, transform 180ms ease;
+  transition: all 180ms ease;
 }
 
 .quick-card:hover {
-  background: rgba(236, 167, 44, 0.14);
+  background: rgba(14, 165, 233, 0.1);
+  border-color: var(--accent-blue);
   transform: translateY(-1px);
 }
 
 .result-card {
-  border: 1px solid rgba(16, 24, 32, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(30, 41, 59, 0.4);
   padding: 0.85rem;
   transition: all 180ms ease;
 }
 
 .result-card:hover {
-  border-color: var(--amberline);
-  background: rgba(255, 255, 255, 0.85);
+  border-color: var(--accent-blue);
+  background: rgba(30, 41, 59, 0.6);
 }
 
 .chat-bubble {
@@ -245,39 +268,38 @@ textarea {
 
 .chat-user {
   margin-left: auto;
-  background: var(--ink);
+  background: var(--accent-blue);
   color: white;
-  border-bottom-right-radius: 0.2rem;
+  border-bottom-right-radius: 0.1rem;
 }
 
 .chat-assistant {
-  border: 1px solid rgba(16, 24, 32, 0.08);
-  background: rgba(255, 255, 255, 0.86);
-  color: var(--ink);
-  border-bottom-left-radius: 0.2rem;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  color: #f1f5f9;
+  border-bottom-left-radius: 0.1rem;
 }
 
 .chat-session-card {
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
-  border: 1px solid rgba(16, 24, 32, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.68);
+  background: rgba(30, 41, 59, 0.3);
   padding: 0.75rem;
   transition: all 180ms ease;
 }
 
 .chat-session-card:hover {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(236, 167, 44, 0.28);
+  background: rgba(30, 41, 59, 0.5);
+  border-color: var(--accent-blue);
 }
 
 .chat-session-card-active {
-  background: rgba(16, 24, 32, 0.96);
-  border-color: rgba(16, 24, 32, 0.96);
+  background: rgba(14, 165, 233, 0.1);
+  border-color: var(--accent-blue);
   color: white;
-  box-shadow: 0 12px 24px rgba(16, 24, 32, 0.18);
 }
 
 .chat-session-card-active .text-slateblue\/75,
@@ -291,16 +313,11 @@ textarea {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(236, 167, 44, 0.18);
-  color: var(--ink);
+  background: rgba(14, 165, 233, 0.2);
+  color: var(--accent-blue);
   font-size: 0.65rem;
   font-weight: 800;
   padding: 0.15rem 0.45rem;
-}
-
-.chat-session-card-active .chat-session-badge {
-  background: rgba(236, 167, 44, 0.28);
-  color: white;
 }
 
 .chat-session-delete {
@@ -308,32 +325,28 @@ textarea {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  color: rgba(56, 81, 112, 0.72);
+  color: #94a3b8;
   padding: 0.35rem;
   transition: all 180ms ease;
 }
 
 .chat-session-delete:hover {
-  background: rgba(255, 255, 255, 0.7);
-  color: #a11d1d;
-}
-
-.chat-session-card-active .chat-session-delete {
-  color: rgba(255, 255, 255, 0.65);
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 
 .chat-session-meta {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(16, 24, 32, 0.08);
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   padding: 0.35rem 0.75rem;
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--slateblue);
+  color: #94a3b8;
 }
 
 /* Sidebar Navigation */
@@ -341,25 +354,24 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  border-radius: 0.6rem;
-  color: var(--slateblue);
+  border-radius: 0.5rem;
+  color: #94a3b8;
   padding: 0.5rem 0.85rem;
   text-decoration: none;
-  font-weight: 600;
-  font-size: 0.875rem;
+  font-weight: 500;
+  font-size: 0.85rem;
   transition: all 180ms ease;
 }
 
 .nav-pill-active {
-  background: var(--ink);
-  color: white;
-  box-shadow: 0 4px 12px rgba(16, 24, 32, 0.15);
+  background: rgba(14, 165, 233, 0.1);
+  color: var(--accent-blue);
+  border: 1px solid rgba(14, 165, 233, 0.2);
 }
 
 .nav-pill:not(.nav-pill-active):hover {
-  background: rgba(16, 24, 32, 0.06);
-  color: var(--ink);
-  transform: translateX(2px);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f8fafc;
 }
 
 /* Table Refinement */
@@ -372,27 +384,22 @@ textarea {
 .nexus-table th {
   text-align: left;
   padding: 0.6rem 0.85rem;
-  color: var(--slateblue);
-  font-size: 0.68rem;
+  color: #94a3b8;
+  font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
   text-transform: uppercase;
-  border-bottom: 1px solid rgba(16, 24, 32, 0.06);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 .nexus-table td {
   padding: 0.6rem 0.85rem;
-  border-bottom: 1px solid rgba(16, 24, 32, 0.04);
-  color: var(--ink);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.05);
+  color: #e2e8f0;
   font-size: 0.825rem;
 }
 
-.nexus-table tr:last-child td {
-  border-bottom: none;
-}
-
 .nexus-table tr:hover td {
-  background: rgba(16, 24, 32, 0.02);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .folder-tree-item {
@@ -400,23 +407,22 @@ textarea {
   width: 100%;
   align-items: center;
   gap: 0.2rem;
-  border-radius: 0.45rem;
-  color: var(--slateblue);
+  border-radius: 0.4rem;
+  color: #94a3b8;
   padding: 0.2rem;
   text-align: left;
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   transition: all 180ms ease;
 }
 
 .folder-tree-item:hover {
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f8fafc;
 }
 
 .folder-tree-item-active {
-  background: rgba(16, 24, 32, 0.92);
-  color: white;
-  box-shadow: 0 4px 12px rgba(16, 24, 32, 0.12);
+  background: rgba(14, 165, 233, 0.1);
+  color: var(--accent-blue);
 }
 
 .folder-tree-label {
@@ -441,11 +447,7 @@ textarea {
 }
 
 .folder-toggle:hover:not(:disabled) {
-  background: rgba(236, 167, 44, 0.18);
-}
-
-.folder-toggle:disabled {
-  opacity: 0.35;
+  background: rgba(14, 165, 233, 0.15);
 }
 
 .folder-toggle-open {
@@ -456,16 +458,11 @@ textarea {
   margin-left: auto;
   min-width: 1.4rem;
   border-radius: 999px;
-  background: rgba(56, 81, 112, 0.1);
+  background: rgba(148, 163, 184, 0.1);
   padding: 0.08rem 0.35rem;
   text-align: center;
   font-size: 0.62rem;
   font-weight: 800;
-}
-
-.folder-tree-item-active .folder-tree-count {
-  background: rgba(255, 255, 255, 0.16);
-  color: rgba(255, 255, 255, 0.86);
 }
 
 .file-folder-card {
@@ -473,17 +470,17 @@ textarea {
   min-height: 4rem;
   align-items: center;
   gap: 0.75rem;
-  border: 1px solid rgba(16, 24, 32, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 0.6rem;
-  background: rgba(255, 255, 255, 0.76);
+  background: rgba(30, 41, 59, 0.4);
   padding: 0.75rem 0.85rem;
-  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+  transition: all 180ms ease;
 }
 
 .file-folder-card:hover {
+  border-color: var(--accent-blue);
+  background: rgba(30, 41, 59, 0.6);
   transform: translateY(-1px);
-  border-color: rgba(236, 167, 44, 0.32);
-  background: rgba(255, 255, 255, 0.92);
 }
 
 .file-folder-icon,
@@ -492,69 +489,71 @@ textarea {
   place-items: center;
   flex-shrink: 0;
   border-radius: 0.5rem;
-  color: var(--slateblue);
+  color: var(--accent-blue);
 }
 
 .file-folder-icon {
   width: 2rem;
   height: 2rem;
-  background: linear-gradient(135deg, rgba(236, 167, 44, 0.22), rgba(236, 167, 44, 0.08));
+  background: rgba(14, 165, 233, 0.15);
 }
 
 .file-row-icon {
   width: 1.75rem;
   height: 1.75rem;
-  background: linear-gradient(135deg, rgba(56, 81, 112, 0.14), rgba(56, 81, 112, 0.06));
+  background: rgba(148, 163, 184, 0.1);
 }
 
 .orb {
   position: absolute;
   border-radius: 999px;
-  filter: blur(4px);
-  opacity: 0.7;
+  filter: blur(80px);
+  opacity: 0.4;
   pointer-events: none;
 }
 
 .orb-one {
   right: 6%;
   top: 10%;
-  width: 12rem;
-  height: 12rem;
-  background: rgba(236, 167, 44, 0.28);
+  width: 20rem;
+  height: 20rem;
+  background: rgba(14, 165, 233, 0.15);
 }
 
 .orb-two {
   right: 24%;
   bottom: -4rem;
-  width: 15rem;
-  height: 15rem;
-  background: rgba(106, 141, 115, 0.18);
+  width: 25rem;
+  height: 25rem;
+  background: rgba(56, 189, 248, 0.1);
 }
 
 .login-grid {
   grid-template-columns: minmax(0, 1.08fr) minmax(24rem, 0.92fr);
+  background: #0a0f14;
 }
 
 .login-orb {
   position: absolute;
   border-radius: 999px;
   pointer-events: none;
+  filter: blur(100px);
 }
 
 .login-orb-one {
   right: -8rem;
   top: 10rem;
-  width: 20rem;
-  height: 20rem;
-  background: rgba(236, 167, 44, 0.24);
+  width: 30rem;
+  height: 30rem;
+  background: rgba(14, 165, 233, 0.1);
 }
 
 .login-orb-two {
   left: 45%;
   bottom: -9rem;
-  width: 22rem;
-  height: 22rem;
-  background: rgba(106, 141, 115, 0.22);
+  width: 35rem;
+  height: 35rem;
+  background: rgba(56, 189, 248, 0.08);
 }
 
 @media (max-width: 900px) {
