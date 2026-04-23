@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -56,6 +56,7 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
 CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
 PDF_EXTRACT_TIMEOUT_SECONDS = int(os.getenv("PDF_EXTRACT_TIMEOUT_SECONDS", "180"))
 PDF_PYPDF_MIN_CHARS = int(os.getenv("PDF_PYPDF_MIN_CHARS", "80"))
+SEARCH_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TIMEOUT_SECONDS", "8"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -84,6 +85,7 @@ chroma_client = None
 chroma_collections: dict[str, Any] = {}
 firebase_request = None
 processing_executor = ThreadPoolExecutor(max_workers=max(2, min(4, (os.cpu_count() or 2))))
+search_executor = ThreadPoolExecutor(max_workers=2)
 manifest_lock = threading.Lock()
 active_processing_jobs: set[str] = set()
 active_processing_lock = threading.Lock()
@@ -2852,8 +2854,29 @@ def hybrid_search(
     limit: int = 5,
 ) -> list[SearchResult]:
     metadata_results = metadata_search(current_user=current_user, query=query, limit=limit)
-    semantic_results = semantic_search(current_user=current_user, query=query, limit=limit)
+    semantic_results = semantic_search_with_timeout(current_user=current_user, query=query, limit=limit)
     return merge_search_results([metadata_results, semantic_results], limit=limit)
+
+
+def semantic_search_with_timeout(
+    current_user: AuthenticatedUserContext,
+    query: str,
+    limit: int = 5,
+) -> list[SearchResult]:
+    future = search_executor.submit(semantic_search, current_user, query, limit)
+    try:
+        return future.result(timeout=SEARCH_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        logger.warning(
+            "Semantic search timed out after %.1fs for user=%s query=%s",
+            SEARCH_TIMEOUT_SECONDS,
+            current_user.uid,
+            query[:120],
+        )
+        return []
+    except Exception as exc:
+        logger.warning("Semantic search failed for user=%s: %s", current_user.uid, exc)
+        return []
 
 
 def extract_lookup_intent_with_groq(user_message: str) -> LookupIntent:

@@ -326,10 +326,23 @@ export async function uploadDocuments(
 
 export async function searchSemantic(query: string, token: string): Promise<SearchResult[]> {
   const params = new URLSearchParams({ query, limit: "6" });
-  const response = await fetch(`${resolveApiBase()}/search-semantic?${params.toString()}`, {
-    headers: authHeaders(token)
-  });
-  return parseJsonResponse<SearchResult[]>(response);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(`${resolveApiBase()}/search-semantic?${params.toString()}`, {
+      headers: authHeaders(token),
+      signal: controller.signal,
+    });
+    return parseJsonResponse<SearchResult[]>(response);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("A busca demorou demais para responder. Tente novamente em alguns segundos.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export async function sendChatMessage(
