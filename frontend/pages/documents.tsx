@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, FormEvent, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { DocumentRecord, listDocuments, uploadDocument } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
@@ -12,6 +12,7 @@ export default function DocumentsPage() {
   const [uploadStatus, setUploadStatus] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (user && authProfile) {
@@ -40,10 +41,14 @@ export default function DocumentsPage() {
   async function handleUpload(event: FormEvent) {
     event.preventDefault();
     if (!selectedFile) return;
+    if (selectedFile.type && selectedFile.type !== "application/pdf") {
+      setError("Selecione um arquivo PDF válido.");
+      return;
+    }
 
     setIsBusy(true);
     setError("");
-    setUploadStatus("Processando documento...");
+    setUploadStatus("Enviando e indexando documento. PDFs grandes podem levar alguns minutos.");
     try {
       const token = await getCurrentToken();
       const result = await uploadDocument(selectedFile, token);
@@ -53,9 +58,12 @@ export default function DocumentsPage() {
           : `Documento indexado com sucesso.`
       );
       setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       await refreshDocuments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha no upload.");
+      setError(err instanceof Error ? err.message : "Falha no upload. Tente novamente.");
       setUploadStatus("");
     } finally {
       setIsBusy(false);
@@ -76,10 +84,20 @@ export default function DocumentsPage() {
           <form onSubmit={handleUpload} className="space-y-3">
             <label className="drop-zone">
               <input 
+                ref={fileInputRef}
                 type="file" 
                 className="hidden" 
                 accept=".pdf" 
-                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                disabled={isBusy}
+                onChange={(event) => {
+                  setError("");
+                  setUploadStatus("");
+                  const file = event.target.files?.[0] || null;
+                  setSelectedFile(file);
+                  if (file && file.type && file.type !== "application/pdf") {
+                    setError("Selecione um arquivo PDF válido.");
+                  }
+                }}
               />
               <div className="text-center">
                 <svg className="w-8 h-8 mx-auto mb-2 text-slateblue/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -53,6 +53,7 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "300"))
 CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
 PDF_EXTRACT_TIMEOUT_SECONDS = int(os.getenv("PDF_EXTRACT_TIMEOUT_SECONDS", "180"))
+PDF_PYPDF_MIN_CHARS = int(os.getenv("PDF_PYPDF_MIN_CHARS", "80"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -747,6 +748,23 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
 def extract_pdf_markdown(pdf_path: Path) -> str:
     started_at = time.perf_counter()
     try:
+        markdown_text = extract_pdf_markdown_with_pypdf(pdf_path)
+        if len(markdown_text.strip()) >= PDF_PYPDF_MIN_CHARS:
+            logger.info(
+                "PDF extracted with pypdf in %.2fs for %s",
+                time.perf_counter() - started_at,
+                pdf_path.name,
+            )
+            return markdown_text
+        logger.info(
+            "PyPDF extracted only %s chars for %s, trying docling/OCR fallback",
+            len(markdown_text.strip()),
+            pdf_path.name,
+        )
+    except Exception as exc:
+        logger.warning("PyPDF extraction failed for %s, trying docling fallback: %s", pdf_path.name, exc)
+
+    try:
         markdown_text = extract_pdf_markdown_with_docling(pdf_path)
         if markdown_text.strip():
             logger.info(
@@ -755,18 +773,9 @@ def extract_pdf_markdown(pdf_path: Path) -> str:
                 pdf_path.name,
             )
             return markdown_text
-        logger.warning("Docling returned empty markdown for %s, trying pypdf fallback", pdf_path.name)
+        logger.warning("Docling returned empty markdown for %s", pdf_path.name)
     except Exception as exc:
         logger.warning("Docling extraction failed for %s: %s", pdf_path.name, exc)
-
-    markdown_text = extract_pdf_markdown_with_pypdf(pdf_path)
-    if markdown_text.strip():
-        logger.info(
-            "PDF extracted with pypdf fallback in %.2fs for %s",
-            time.perf_counter() - started_at,
-            pdf_path.name,
-        )
-        return markdown_text
 
     raise HTTPException(status_code=422, detail="Could not extract readable text from PDF.")
 
