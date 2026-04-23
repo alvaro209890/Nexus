@@ -1,10 +1,20 @@
-import { DragEvent, useState, useEffect, FormEvent, useRef } from "react";
+import { DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { DocumentRecord, listDocuments, uploadDocuments } from "../lib/api";
+import {
+  DocumentProcessingDetail,
+  DocumentProcessingEvent,
+  DocumentRecord,
+  getDocumentProcessingDetail,
+  listDocuments,
+  retryDocumentProcessing,
+  uploadDocuments
+} from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
-import { FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2 } from "lucide-react";
+import { Dialog } from "../components/ui/Dialog";
+import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
+import { FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2, RefreshCw, Eye } from "lucide-react";
 
 const ACTIVE_PROCESSING_STATUSES = new Set(["queued", "extracting", "classifying", "indexing"]);
 
@@ -17,44 +27,14 @@ export default function DocumentsPage() {
   const [error, setError] = useState("");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
+  const [processingDetail, setProcessingDetail] = useState<DocumentProcessingDetail | null>(null);
+  const [loadingProcessingDetail, setLoadingProcessingDetail] = useState(false);
+  const [retryingId, setRetryingId] = useState("");
+  const [viewerDocument, setViewerDocument] = useState<DocumentRecord | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (user && authProfile) {
-      void (async () => {
-        try {
-          const token = await getCurrentToken();
-          const docs = await listDocuments(token);
-          setDocuments(docs);
-        } catch (err) {
-          console.error("Failed to load documents", err);
-        }
-      })();
-    }
-  }, [user, authProfile, getCurrentToken]);
-
-  useEffect(() => {
-    if (!user || !authProfile) return;
-    if (!documents.some((document) => isDocumentProcessing(document))) return;
-
-    const intervalId = window.setInterval(() => {
-      void (async () => {
-        try {
-          const token = await getCurrentToken();
-          const docs = await listDocuments(token);
-          setDocuments(docs);
-        } catch (err) {
-          console.error("Failed to refresh documents", err);
-        }
-      })();
-    }, 3000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [documents, user, authProfile, getCurrentToken]);
-
-  async function refreshDocuments() {
+  const refreshDocuments = useCallback(async () => {
     try {
       const token = await getCurrentToken();
       const docs = await listDocuments(token);
@@ -62,7 +42,52 @@ export default function DocumentsPage() {
     } catch (err) {
       console.error("Failed to load documents", err);
     }
-  }
+  }, [getCurrentToken]);
+
+  const loadProcessingDetail = useCallback(async (documentId: string) => {
+    if (!documentId) return;
+    setLoadingProcessingDetail(true);
+    try {
+      const token = await getCurrentToken();
+      const detail = await getDocumentProcessingDetail(documentId, token);
+      setProcessingDetail(detail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao carregar os detalhes do processamento.");
+    } finally {
+      setLoadingProcessingDetail(false);
+    }
+  }, [getCurrentToken]);
+
+  useEffect(() => {
+    if (user && authProfile) {
+      void refreshDocuments();
+    }
+  }, [user, authProfile, refreshDocuments]);
+
+  useEffect(() => {
+    if (!user || !authProfile) return;
+    if (!documents.some((document) => isDocumentProcessing(document))) return;
+
+    const intervalId = window.setInterval(() => {
+      void refreshDocuments();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [documents, user, authProfile, refreshDocuments]);
+
+  useEffect(() => {
+    if (!selectedDocumentId || !processingDetail?.is_processing) return;
+
+    const intervalId = window.setInterval(() => {
+      void loadProcessingDetail(selectedDocumentId);
+    }, 3000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadProcessingDetail, processingDetail?.is_processing, selectedDocumentId]);
 
   async function handleUpload(event: FormEvent) {
     event.preventDefault();
@@ -147,6 +172,35 @@ export default function DocumentsPage() {
     event.preventDefault();
     setIsDragging(false);
     handleFileSelection(Array.from(event.dataTransfer.files || []));
+  }
+
+  async function openProcessingDetail(document: DocumentRecord) {
+    setSelectedDocumentId(document.document_id);
+    setProcessingDetail({
+      document,
+      events: [],
+      can_retry: String(document.processing_status || "").toLowerCase() === "failed",
+      is_processing: isDocumentProcessing(document),
+    });
+    await loadProcessingDetail(document.document_id);
+  }
+
+  async function handleRetry(document: DocumentRecord) {
+    setRetryingId(document.document_id);
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      const updated = await retryDocumentProcessing(document.document_id, token);
+      setDocuments((current) =>
+        current.map((item) => item.document_id === updated.document_id ? updated : item)
+      );
+      setSelectedDocumentId(updated.document_id);
+      await loadProcessingDetail(updated.document_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível reenfileirar o documento.");
+    } finally {
+      setRetryingId("");
+    }
   }
 
   const formatDocName = (name: string) => {
@@ -313,13 +367,14 @@ export default function DocumentsPage() {
                   <th>Data</th>
                   <th>Etapa</th>
                   <th>Chunks</th>
-                  <th className="rounded-tr-lg">Status</th>
+                  <th>Status</th>
+                  <th className="rounded-tr-lg w-44">Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {documents.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-12 border-none">
+                    <td colSpan={6} className="py-12 border-none">
                       <div className="empty-state">
                         <Info size={32} className="text-muted mb-2" />
                         <p className="text-base font-semibold">Acervo vazio</p>
@@ -331,7 +386,7 @@ export default function DocumentsPage() {
                   </tr>
                 ) : (
                   documents.map((doc) => (
-                    <tr key={doc.document_id} className="group">
+                    <tr key={doc.document_id} className="group cursor-pointer" onClick={() => void openProcessingDetail(doc)}>
                       <td className="font-medium text-primary">
                         <div className="flex items-center gap-3">
                           <FileText size={16} className="text-muted group-hover:text-accent transition-colors" />
@@ -366,6 +421,47 @@ export default function DocumentsPage() {
                           variant={documentStatusVariant(doc)}
                         />
                       </td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void openProcessingDetail(doc);
+                            }}
+                          >
+                            <Info size={14} />
+                            Detalhes
+                          </button>
+                          {String(doc.processing_status || "").toLowerCase() === "ready" && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setViewerDocument(doc);
+                              }}
+                            >
+                              <Eye size={14} />
+                              Ver PDF
+                            </button>
+                          )}
+                          {String(doc.processing_status || "").toLowerCase() === "failed" && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded-lg border border-danger/30 px-2.5 py-1.5 text-xs font-semibold text-danger transition-colors hover:bg-danger/10"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleRetry(doc);
+                              }}
+                            >
+                              {retryingId === doc.document_id ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                              Retry
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -374,6 +470,106 @@ export default function DocumentsPage() {
           </div>
         </GlassCard>
       </div>
+
+      <Dialog
+        open={Boolean(selectedDocumentId)}
+        title={processingDetail?.document.title || processingDetail?.document.suggested_name || "Processamento do documento"}
+        description="Linha do tempo de processamento, erros e ação de retry quando necessário."
+        onClose={() => {
+          if (retryingId) return;
+          setSelectedDocumentId("");
+          setProcessingDetail(null);
+        }}
+        panelClassName="!w-[min(96vw,72rem)]"
+        footer={processingDetail ? (
+          <>
+            {processingDetail.document.processing_status === "ready" && (
+              <Button variant="secondary" type="button" onClick={() => setViewerDocument(processingDetail.document)}>
+                Visualizar PDF
+              </Button>
+            )}
+            {processingDetail.can_retry && (
+              <Button
+                type="button"
+                variant="secondary"
+                isLoading={retryingId === processingDetail.document.document_id}
+                onClick={() => void handleRetry(processingDetail.document)}
+              >
+                Tentar novamente
+              </Button>
+            )}
+            <Button variant="ghost" type="button" onClick={() => {
+              setSelectedDocumentId("");
+              setProcessingDetail(null);
+            }}>
+              Fechar
+            </Button>
+          </>
+        ) : undefined}
+      >
+        {loadingProcessingDetail && !processingDetail ? (
+          <div className="py-16 text-center text-sm text-slateblue/70">Carregando detalhes do processamento...</div>
+        ) : processingDetail ? (
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+              <SummaryField label="Status" value={documentStatusLabel(processingDetail.document)} />
+              <SummaryField label="Etapa" value={documentStageLabel(processingDetail.document)} />
+              <SummaryField label="Progresso" value={`${documentProgressValue(processingDetail.document)}%`} />
+              <SummaryField label="Chunks" value={String(processingDetail.document.chunks_indexed || 0)} />
+            </div>
+
+            {processingDetail.document.processing_error && (
+              <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm text-white">
+                <p className="text-xs font-bold uppercase tracking-[0.08em] text-danger">Erro atual</p>
+                <p className="mt-2">{processingDetail.document.processing_error}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.1fr_1.9fr]">
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-[rgba(20,25,33,0.72)] p-4">
+                <p className="text-sm font-bold text-white">Resumo técnico</p>
+                <MetadataLine label="Arquivo" value={processingDetail.document.original_name} />
+                <MetadataLine label="Sugestão" value={processingDetail.document.suggested_name} />
+                <MetadataLine label="Caminho" value={processingDetail.document.folder_path || "Meu Disco"} />
+                <MetadataLine label="Inicio" value={formatTimestamp(processingDetail.document.processing_started_at)} />
+                <MetadataLine label="Fim" value={formatTimestamp(processingDetail.document.processing_completed_at)} />
+                <MetadataLine label="Resumo" value={documentStageDescription(processingDetail.document)} />
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-[rgba(20,25,33,0.72)] p-4">
+                <div className="mb-4 flex items-center justify-between">
+                  <p className="text-sm font-bold text-white">Timeline do processamento</p>
+                  {processingDetail.is_processing && (
+                    <span className="text-xs font-semibold text-accent-strong">Atualizando automaticamente</span>
+                  )}
+                </div>
+                <div className="max-h-[24rem] space-y-3 overflow-y-auto pr-2">
+                  {processingDetail.events.length === 0 ? (
+                    <p className="text-sm text-slateblue/70">Nenhum evento registrado ainda.</p>
+                  ) : (
+                    processingDetail.events.slice().reverse().map((event) => (
+                      <ProcessingEventItem key={event.event_id} event={event} />
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
+
+      <DocumentViewerDialog
+        open={Boolean(viewerDocument)}
+        onClose={() => setViewerDocument(null)}
+        documentId={viewerDocument?.document_id}
+        title={viewerDocument?.title || viewerDocument?.suggested_name || "Visualizador"}
+        originalName={viewerDocument?.original_name || viewerDocument?.suggested_name || "documento.pdf"}
+        page={null}
+        chunkLabel={null}
+        snippet={viewerDocument?.summary}
+        folderPath={viewerDocument?.folder_path}
+        pdfPath={viewerDocument?.pdf_path}
+      />
     </div>
   );
 }
@@ -397,6 +593,45 @@ function ProgressStep({
       <span className="text-[0.65rem] font-bold uppercase tracking-wider text-muted">
         {state === "done" ? "OK" : state === "active" ? "AGORA" : "ESPERA"}
       </span>
+    </div>
+  );
+}
+
+function SummaryField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-[rgba(20,25,33,0.72)] px-4 py-3">
+      <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
+    </div>
+  );
+}
+
+function MetadataLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">{label}</p>
+      <p className="mt-1 break-all text-sm text-white/90">{value || "--"}</p>
+    </div>
+  );
+}
+
+function ProcessingEventItem({ event }: { event: DocumentProcessingEvent }) {
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${eventToneClasses(event.level)}`}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-[0.68rem] font-bold uppercase tracking-[0.08em]">
+          {eventLabel(event)}
+        </span>
+        <span className="text-[0.68rem] font-semibold opacity-80">
+          {formatTimestamp(event.timestamp)}
+        </span>
+      </div>
+      <p className="text-sm leading-relaxed text-white/90">{event.message}</p>
+      {typeof event.progress === "number" && (
+        <p className="mt-2 text-[0.68rem] font-semibold uppercase tracking-[0.08em] opacity-80">
+          Progresso {Math.max(0, Math.min(Math.round(event.progress), 100))}%
+        </p>
+      )}
     </div>
   );
 }
@@ -513,4 +748,35 @@ function documentStatusVariant(document: DocumentRecord): "info" | "success" | "
     default:
       return "success";
   }
+}
+
+function eventToneClasses(level: string): string {
+  switch (level) {
+    case "danger":
+      return "border-danger/30 bg-danger/10 text-danger";
+    case "warning":
+      return "border-amber-300/30 bg-amber-400/10 text-amber-200";
+    case "success":
+      return "border-emerald-300/30 bg-emerald-400/10 text-emerald-200";
+    default:
+      return "border-white/10 bg-black/10 text-sky-200";
+  }
+}
+
+function eventLabel(event: DocumentProcessingEvent): string {
+  const stage = String(event.stage || "").toLowerCase();
+  if (stage === "queued") return "Fila";
+  if (stage === "extracting") return "Extração";
+  if (stage === "classifying") return "Classificação";
+  if (stage === "indexing") return "Indexação";
+  if (stage === "ready") return "Concluído";
+  if (stage === "failed") return "Falha";
+  return stage || "Evento";
+}
+
+function formatTimestamp(value?: string | null): string {
+  if (!value) return "--";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("pt-BR");
 }

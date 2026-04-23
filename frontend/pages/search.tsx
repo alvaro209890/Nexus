@@ -8,6 +8,7 @@ import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
 import { HighlightedText } from "../components/ui/HighlightedText";
 import { Dialog } from "../components/ui/Dialog";
+import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
 
 export default function SearchPage() {
   const { getCurrentToken } = useAuth();
@@ -16,6 +17,7 @@ export default function SearchPage() {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  const [viewerResult, setViewerResult] = useState<SearchResult | null>(null);
   const [detailError, setDetailError] = useState("");
   const [downloadingId, setDownloadingId] = useState("");
 
@@ -186,6 +188,9 @@ export default function SearchPage() {
             <Button variant="ghost" type="button" onClick={() => setSelectedResult(null)} disabled={Boolean(downloadingId)}>
               Fechar
             </Button>
+            <Button variant="secondary" type="button" onClick={() => setViewerResult(selectedResult)} disabled={Boolean(downloadingId)}>
+              Visualizar PDF
+            </Button>
             <Button
               type="button"
               isLoading={downloadingId === selectedResult.document_id}
@@ -265,6 +270,19 @@ export default function SearchPage() {
           </div>
         )}
       </Dialog>
+
+      <DocumentViewerDialog
+        open={Boolean(viewerResult)}
+        onClose={() => setViewerResult(null)}
+        documentId={viewerResult?.document_id}
+        title={viewerResult ? resolveDocumentTitle(viewerResult) : "Visualizador"}
+        originalName={viewerResult ? resolveOriginalName(viewerResult) : "documento.pdf"}
+        page={viewerResult ? resolvePageLabel(viewerResult) : null}
+        chunkLabel={viewerResult ? resolveChunkLabel(viewerResult) : null}
+        snippet={viewerResult?.snippet}
+        folderPath={viewerResult ? resolveFolderPath(viewerResult) : null}
+        pdfPath={viewerResult?.pdf_path}
+      />
     </div>
   );
 }

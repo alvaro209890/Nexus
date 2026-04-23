@@ -7,9 +7,20 @@ interface DialogProps {
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  panelClassName?: string;
+  contentClassName?: string;
 }
 
-export function Dialog({ open, title, description, children, footer, onClose }: DialogProps) {
+export function Dialog({
+  open,
+  title,
+  description,
+  children,
+  footer,
+  onClose,
+  panelClassName = "",
+  contentClassName = "",
+}: DialogProps) {
   useEffect(() => {
     if (!open) return;
 
@@ -31,7 +42,7 @@ export function Dialog({ open, title, description, children, footer, onClose }: 
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"
-        className="dialog-panel"
+        className={`dialog-panel ${panelClassName}`}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="dialog-header">
@@ -46,7 +57,7 @@ export function Dialog({ open, title, description, children, footer, onClose }: 
             <CloseIcon />
           </button>
         </div>
-        <div className="dialog-content">{children}</div>
+        <div className={`dialog-content ${contentClassName}`}>{children}</div>
         {footer && <div className="dialog-footer">{footer}</div>}
       </div>
     </div>

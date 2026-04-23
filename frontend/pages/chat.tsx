@@ -13,6 +13,7 @@ import {
 } from "../lib/api";
 import { GlassCard } from "../components/ui/GlassCard";
 import { Button } from "../components/ui/Button";
+import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
 import { 
   Plus, 
   Trash2, 
@@ -35,6 +36,11 @@ type ChatReference = {
   suggested_name?: string;
   pdf_path?: string;
   original_name?: string;
+  folder_path?: string;
+  chunk_id?: string;
+  chunk_index?: string | number;
+  page?: string | number;
+  snippet?: string;
 };
 
 export default function ChatPage() {
@@ -44,6 +50,7 @@ export default function ChatPage() {
   const [activeSessionId, setActiveSessionId] = useState("");
   const [messages, setMessages] = useState<PersistedChatMessage[]>([]);
   const [references, setReferences] = useState<ChatReference[]>([]);
+  const [viewerReference, setViewerReference] = useState<ChatReference | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
@@ -541,22 +548,43 @@ export default function ChatPage() {
                 </div>
               ) : (
                 references.map((reference, index) => (
-                  <div key={`${reference.document_id || "ref"}-${index}`} className="rounded-xl border border-border-soft bg-bg-surface p-3 hover:border-accent/40 transition-colors group">
+                  <button
+                    key={`${reference.document_id || "ref"}-${index}`}
+                    type="button"
+                    onClick={() => setViewerReference(reference)}
+                    className="w-full rounded-xl border border-border-soft bg-bg-surface p-3 text-left transition-colors hover:border-accent/40 group"
+                  >
                     <p className="text-xs font-bold text-primary leading-snug mb-2 group-hover:text-accent transition-colors" title={reference.original_name || reference.title || reference.suggested_name}>
                       {formatDocName(reference.title || reference.suggested_name || "Documento referenciado")}
                     </p>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-[0.6rem] font-bold px-1.5 py-0.5 rounded-md bg-accent/10 text-accent border border-accent/20">
                         {reference.classification || "DOCUMENTO"}
                       </span>
+                      <span className="text-[0.65rem] font-semibold text-slateblue/70">
+                        {reference.page ? `Página ${reference.page}` : reference.chunk_index ? `Chunk ${reference.chunk_index}` : "Abrir PDF"}
+                      </span>
                     </div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
           </GlassCard>
         )}
       </div>
+
+      <DocumentViewerDialog
+        open={Boolean(viewerReference)}
+        onClose={() => setViewerReference(null)}
+        documentId={viewerReference?.document_id}
+        title={viewerReference?.title || viewerReference?.suggested_name || "Visualizador"}
+        originalName={viewerReference?.original_name || viewerReference?.suggested_name || "documento.pdf"}
+        page={viewerReference?.page}
+        chunkLabel={viewerReference?.chunk_index || viewerReference?.chunk_id}
+        snippet={viewerReference?.snippet}
+        folderPath={viewerReference?.folder_path}
+        pdfPath={viewerReference?.pdf_path}
+      />
     </div>
   );
 }
@@ -586,6 +614,11 @@ function extractLatestReferences(messages: PersistedChatMessage[]): ChatReferenc
       suggested_name: typeof reference.suggested_name === "string" ? reference.suggested_name : undefined,
       pdf_path: typeof reference.pdf_path === "string" ? reference.pdf_path : undefined,
       original_name: typeof reference.original_name === "string" ? reference.original_name : undefined,
+      folder_path: typeof reference.folder_path === "string" ? reference.folder_path : undefined,
+      chunk_id: typeof reference.chunk_id === "string" ? reference.chunk_id : undefined,
+      chunk_index: typeof reference.chunk_index === "string" || typeof reference.chunk_index === "number" ? reference.chunk_index : undefined,
+      page: typeof reference.page === "string" || typeof reference.page === "number" ? reference.page : undefined,
+      snippet: typeof reference.snippet === "string" ? reference.snippet : undefined,
     }));
   }
   return [];

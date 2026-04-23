@@ -116,6 +116,24 @@ export type DocumentRecord = {
   size_bytes?: number | null;
 };
 
+export type DocumentProcessingEvent = {
+  event_id: string;
+  document_id: string;
+  stage: string;
+  status: string;
+  level: string;
+  message: string;
+  progress?: number | null;
+  timestamp: string;
+};
+
+export type DocumentProcessingDetail = {
+  document: DocumentRecord;
+  events: DocumentProcessingEvent[];
+  can_retry: boolean;
+  is_processing: boolean;
+};
+
 export type FolderRecord = {
   path: string;
   name: string;
@@ -379,6 +397,27 @@ export async function listDocuments(token: string, limit = 20): Promise<Document
   return parseJsonResponse<DocumentRecord[]>(response);
 }
 
+export async function getDocumentProcessingDetail(
+  documentId: string,
+  token: string
+): Promise<DocumentProcessingDetail> {
+  const response = await fetch(`${resolveApiBase()}/documents/${documentId}/processing`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<DocumentProcessingDetail>(response);
+}
+
+export async function retryDocumentProcessing(
+  documentId: string,
+  token: string
+): Promise<DocumentRecord> {
+  const response = await fetch(`${resolveApiBase()}/documents/${documentId}/retry`, {
+    method: "POST",
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<DocumentRecord>(response);
+}
+
 export async function listFolders(token: string): Promise<FolderRecord[]> {
   const response = await fetch(`${resolveApiBase()}/folders`, {
     headers: authHeaders(token)
@@ -408,11 +447,11 @@ function parseDownloadFilename(contentDisposition: string | null, fallbackName: 
   return fallbackName;
 }
 
-export async function downloadDocument(
+async function fetchDocumentBinary(
   documentId: string,
   token: string,
   fallbackName: string
-): Promise<void> {
+): Promise<{ blob: Blob; filename: string }> {
   const response = await fetch(`${resolveApiBase()}/documents/${documentId}/download`, {
     headers: authHeaders(token)
   });
@@ -424,10 +463,34 @@ export async function downloadDocument(
 
   const blob = await response.blob();
   const downloadName = parseDownloadFilename(response.headers.get("content-disposition"), fallbackName);
+  return {
+    blob,
+    filename: downloadName,
+  };
+}
+
+export async function createDocumentObjectUrl(
+  documentId: string,
+  token: string,
+  fallbackName: string
+): Promise<{ url: string; filename: string }> {
+  const { blob, filename } = await fetchDocumentBinary(documentId, token, fallbackName);
+  return {
+    url: window.URL.createObjectURL(blob),
+    filename,
+  };
+}
+
+export async function downloadDocument(
+  documentId: string,
+  token: string,
+  fallbackName: string
+): Promise<void> {
+  const { blob, filename } = await fetchDocumentBinary(documentId, token, fallbackName);
   const downloadUrl = window.URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = downloadUrl;
-  anchor.download = downloadName;
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

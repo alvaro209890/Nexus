@@ -106,6 +106,7 @@ class AuthenticatedUserContext:
     incoming_dir: Path
     manifest_path: Path
     folders_path: Path
+    processing_events_dir: Path
     memory_dir: Path
     collection_name: str
 
@@ -198,6 +199,24 @@ class DocumentRecord(BaseModel):
     size_bytes: int | None = None
 
 
+class DocumentProcessingEvent(BaseModel):
+    event_id: str
+    document_id: str
+    stage: str
+    status: str
+    level: str
+    message: str
+    progress: int | None = None
+    timestamp: str
+
+
+class DocumentProcessingDetail(BaseModel):
+    document: DocumentRecord
+    events: list[DocumentProcessingEvent] = Field(default_factory=list)
+    can_retry: bool = False
+    is_processing: bool = False
+
+
 class AuthenticatedUserProfile(BaseModel):
     uid: str
     email: str | None = None
@@ -236,6 +255,9 @@ class LookupIntent(BaseModel):
     year: str | None = None
     project: str | None = None
     folder_hint: str | None = None
+
+
+ACTIVE_PROCESSING_STATUSES = {"queued", "extracting", "classifying", "indexing"}
 
 
 def warn_missing_provider_keys() -> None:
@@ -381,6 +403,16 @@ def process_uploaded_pdf(
         staging_path=staging_path,
     )
     append_manifest_record(current_user, queued_record)
+    append_document_processing_event(
+        current_user,
+        document_id,
+        stage="queued",
+        status="queued",
+        level="info",
+        message="Upload recebido. O documento entrou na fila de processamento.",
+        progress=0,
+        timestamp=str(queued_record.get("uploaded_at") or datetime.now(UTC).isoformat()),
+    )
     enqueue_document_processing(current_user, document_id)
 
     return {
@@ -398,6 +430,24 @@ async def list_documents(
     records = read_manifest_records(current_user)
     visible_records = [hydrate_document_record(record) for record in records[-limit:]][::-1]
     return [DocumentRecord(**record) for record in visible_records]
+
+
+@app.get("/documents/{document_id}/processing", response_model=DocumentProcessingDetail)
+async def get_document_processing_detail(
+    document_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> DocumentProcessingDetail:
+    record = find_document_by_id(current_user, document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    events = read_document_processing_events(current_user, document_id, record=record)
+    return DocumentProcessingDetail(
+        document=DocumentRecord(**record),
+        events=[DocumentProcessingEvent(**event) for event in events],
+        can_retry=document_can_retry(current_user, record),
+        is_processing=is_document_processing_status(record),
+    )
 
 
 @app.get("/folders", response_model=list[FolderRecord])
@@ -468,6 +518,55 @@ async def download_document(
     return FileResponse(path=pdf_path, filename=download_name, media_type="application/pdf")
 
 
+@app.post("/documents/{document_id}/retry", response_model=DocumentRecord)
+async def retry_document_processing(
+    document_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> DocumentRecord:
+    clean_document_id = document_id.strip()
+    if not clean_document_id:
+        raise HTTPException(status_code=400, detail="Document id is required.")
+
+    record = find_document_by_id(current_user, clean_document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    if is_document_processing_status(record):
+        raise HTTPException(status_code=409, detail="This document is already being processed.")
+    if not document_can_retry(current_user, record):
+        raise HTTPException(status_code=409, detail="No retry artifacts are available for this document.")
+
+    clear_document_job_cancelled(current_user.uid, clean_document_id)
+    remove_document_from_vector_store(current_user, clean_document_id)
+    append_document_processing_event(
+        current_user,
+        clean_document_id,
+        stage="queued",
+        status="queued",
+        level="info",
+        message="Retry manual solicitado. O documento voltou para a fila de processamento.",
+        progress=0,
+    )
+
+    updated = update_manifest_record(
+        current_user,
+        clean_document_id,
+        {
+            "processing_status": "queued",
+            "processing_progress": 0,
+            "processing_error": None,
+            "processing_started_at": None,
+            "processing_completed_at": None,
+            "chunks_indexed": 0,
+        },
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Document not found for this user.")
+
+    enqueue_document_processing(current_user, clean_document_id)
+    return DocumentRecord(**hydrate_document_record(updated))
+
+
 @app.delete("/documents/{document_id}")
 async def delete_document(
     document_id: str,
@@ -485,6 +584,7 @@ async def delete_document(
     remove_document_from_vector_store(current_user, clean_document_id)
     prune_document_annotations(current_user, clean_document_id)
     delete_document_files(current_user, record)
+    document_processing_events_path(current_user, clean_document_id).unlink(missing_ok=True)
 
     if not remove_manifest_record(current_user, clean_document_id):
         raise HTTPException(status_code=404, detail="Document not found for this user.")
@@ -753,6 +853,7 @@ def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContex
         incoming_dir=user_dir / "incoming",
         manifest_path=user_dir / "manifest.jsonl",
         folders_path=user_dir / "folders.json",
+        processing_events_dir=user_dir / "processing-events",
         memory_dir=user_dir / "memory",
         collection_name=collection_name_for_user(uid),
     )
@@ -764,6 +865,7 @@ def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
         current_user.originals_dir,
         current_user.markdown_dir,
         current_user.incoming_dir,
+        current_user.processing_events_dir,
         current_user.memory_dir,
         chat_sessions_data_dir(current_user),
     ):
@@ -801,6 +903,7 @@ def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any
         "incoming_dir": str(current_user.incoming_dir),
         "manifest_path": str(current_user.manifest_path),
         "folders_path": str(current_user.folders_path),
+        "processing_events_dir": str(current_user.processing_events_dir),
         "memory_dir": str(current_user.memory_dir),
         "collection_name": current_user.collection_name,
     }
@@ -1493,6 +1596,131 @@ def build_document_record(
     }
 
 
+def document_processing_events_path(current_user: AuthenticatedUserContext, document_id: str) -> Path:
+    safe_id = safe_slug(document_id, fallback="document")
+    return current_user.processing_events_dir / f"{safe_id}.jsonl"
+
+
+def append_document_processing_event(
+    current_user: AuthenticatedUserContext,
+    document_id: str,
+    *,
+    stage: str,
+    status: str,
+    level: str,
+    message: str,
+    progress: int | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    ensure_user_storage(current_user)
+    event = {
+        "event_id": uuid.uuid4().hex[:12],
+        "document_id": document_id,
+        "stage": safe_slug(stage, fallback="evento"),
+        "status": safe_slug(status, fallback="info"),
+        "level": safe_slug(level, fallback="info"),
+        "message": str(message).strip()[:600],
+        "progress": max(0, min(int(progress), 100)) if isinstance(progress, int) else None,
+        "timestamp": str(timestamp or datetime.now(UTC).isoformat()),
+    }
+    with document_processing_events_path(current_user, document_id).open("a", encoding="utf-8") as output:
+        output.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return event
+
+
+def read_document_processing_events(
+    current_user: AuthenticatedUserContext,
+    document_id: str,
+    *,
+    record: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    path = document_processing_events_path(current_user, document_id)
+    events: list[dict[str, Any]] = []
+    if path.exists():
+        with path.open("r", encoding="utf-8") as input_file:
+            for line in input_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                payload["document_id"] = document_id
+                events.append(
+                    {
+                        "event_id": str(payload.get("event_id") or uuid.uuid4().hex[:12]),
+                        "document_id": document_id,
+                        "stage": safe_slug(str(payload.get("stage") or "evento"), fallback="evento"),
+                        "status": safe_slug(str(payload.get("status") or "info"), fallback="info"),
+                        "level": safe_slug(str(payload.get("level") or "info"), fallback="info"),
+                        "message": str(payload.get("message") or "").strip()[:600],
+                        "progress": int(payload["progress"]) if isinstance(payload.get("progress"), int) else None,
+                        "timestamp": str(payload.get("timestamp") or datetime.now(UTC).isoformat()),
+                    }
+                )
+    if events:
+        return sorted(events, key=lambda item: str(item.get("timestamp") or ""))
+
+    effective_record = hydrate_document_record(record) if record is not None else find_document_by_id(current_user, document_id)
+    if effective_record is None:
+        return []
+
+    fallback_message = effective_record.get("processing_error") or documentStageDescription_for_backend(effective_record)
+    fallback_timestamp = str(
+        effective_record.get("processing_completed_at")
+        or effective_record.get("processing_started_at")
+        or effective_record.get("uploaded_at")
+        or datetime.now(UTC).isoformat()
+    )
+    return [
+        {
+            "event_id": f"snapshot-{document_id[:8]}",
+            "document_id": document_id,
+            "stage": str(effective_record.get("processing_status") or "ready"),
+            "status": str(effective_record.get("processing_status") or "ready"),
+            "level": "danger" if str(effective_record.get("processing_status") or "") == "failed" else "info",
+            "message": str(fallback_message),
+            "progress": int(effective_record.get("processing_progress") or 0),
+            "timestamp": fallback_timestamp,
+        }
+    ]
+
+
+def documentStageDescription_for_backend(record: dict[str, Any]) -> str:
+    status = str(record.get("processing_status") or "").strip().lower()
+    if status == "queued":
+        return "Documento aguardando worker livre para iniciar o processamento."
+    if status == "extracting":
+        return "Extraindo texto do PDF."
+    if status == "classifying":
+        return "Classificando metadados e destino do documento."
+    if status == "indexing":
+        return "Gerando chunks e embeddings para indexacao."
+    if status == "failed":
+        return "O processamento falhou antes da indexacao final."
+    return "Documento pronto para busca e visualizacao."
+
+
+def is_document_processing_status(record: dict[str, Any]) -> bool:
+    return str(record.get("processing_status") or "").strip().lower() in ACTIVE_PROCESSING_STATUSES
+
+
+def document_can_retry(current_user: AuthenticatedUserContext, record: dict[str, Any]) -> bool:
+    if str(record.get("processing_status") or "").strip().lower() != "failed":
+        return False
+    if find_resumable_document_artifacts(current_user, record) is not None:
+        return True
+
+    raw_path = str(record.get("pdf_path") or "").strip()
+    if not raw_path:
+        return False
+    source_pdf_path = Path(raw_path).expanduser()
+    return source_pdf_path.exists() and source_pdf_path.is_file()
+
+
 def enqueue_document_processing(current_user: AuthenticatedUserContext, document_id: str) -> None:
     job_key = f"{current_user.uid}:{document_id}"
     with active_processing_lock:
@@ -1532,9 +1760,27 @@ def run_document_processing_job(
     job_key: str,
 ) -> None:
     try:
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="queued",
+            status="started",
+            level="info",
+            message="Worker iniciado para processar o documento.",
+            progress=0,
+        )
         process_document_job(current_user, document_id)
     except Exception as exc:
         logger.exception("Background document processing failed for %s", document_id)
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="failed",
+            status="failed",
+            level="danger",
+            message=str(exc),
+            progress=100,
+        )
         update_manifest_record(
             current_user,
             document_id,
@@ -1572,6 +1818,15 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
             "processing_progress": 15,
         },
     )
+    append_document_processing_event(
+        current_user,
+        document_id,
+        stage="extracting",
+        status="running",
+        level="info",
+        message="Iniciando extração de texto do PDF.",
+        progress=15,
+    )
 
     original_name = safe_filename(str(record.get("original_name") or "document.pdf"))
     file_hash = str(record.get("sha256") or "")
@@ -1592,6 +1847,15 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
                 "markdown_path": str(markdown_path),
             },
         )
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="indexing",
+            status="running",
+            level="info",
+            message="Artefatos recuperados. Retomando indexação a partir do markdown salvo.",
+            progress=72,
+        )
     else:
         source_pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
         if not source_pdf_path.exists() or not source_pdf_path.is_file():
@@ -1609,6 +1873,15 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
                 "processing_status": "classifying",
                 "processing_progress": 45,
             },
+        )
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="classifying",
+            status="running",
+            level="info",
+            message="Texto extraído. Classificando tipo, título e pasta do documento.",
+            progress=45,
         )
 
         try:
@@ -1644,6 +1917,15 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
                 "processing_status": "indexing",
                 "processing_progress": 72,
             },
+        )
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="indexing",
+            status="running",
+            level="info",
+            message="Metadados definidos. Movendo arquivos e preparando a indexação vetorial.",
+            progress=72,
         )
 
         shutil.move(str(source_pdf_path), str(pdf_path))
@@ -1700,6 +1982,15 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
         len(chunks),
         original_name,
     )
+    append_document_processing_event(
+        current_user,
+        document_id,
+        stage="indexing",
+        status="completed",
+        level="success",
+        message=f"Indexação vetorial concluída com {len(chunks)} chunks prontos para busca.",
+        progress=95,
+    )
 
     final_record = build_document_record(
         document_id=document_id,
@@ -1719,6 +2010,16 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
     final_record["processing_error"] = None
 
     update_manifest_record(current_user, document_id, final_record)
+    append_document_processing_event(
+        current_user,
+        document_id,
+        stage="ready",
+        status="ready",
+        level="success",
+        message="Documento pronto para busca semântica, chat e visualização.",
+        progress=100,
+        timestamp=str(final_record["processing_completed_at"]),
+    )
 
 
 def list_recoverable_document_jobs() -> list[tuple[AuthenticatedUserContext, str]]:
@@ -1765,6 +2066,7 @@ def build_user_context_from_storage(user_dir: Path) -> AuthenticatedUserContext 
         incoming_dir=Path(str(payload.get("incoming_dir") or user_dir / "incoming")),
         manifest_path=Path(str(payload.get("manifest_path") or user_dir / "manifest.jsonl")),
         folders_path=Path(str(payload.get("folders_path") or user_dir / "folders.json")),
+        processing_events_dir=Path(str(payload.get("processing_events_dir") or user_dir / "processing-events")),
         memory_dir=Path(str(payload.get("memory_dir") or user_dir / "memory")),
         collection_name=str(payload.get("collection_name") or collection_name_for_user(uid)),
     )
@@ -1776,7 +2078,7 @@ def find_resumable_document_artifacts(
 ) -> tuple[Path, Path] | None:
     folder_parts = sanitize_relative_folder(str(record.get("folder_path") or ""))
     suggested_stem = Path(str(record.get("suggested_name") or "")).stem
-    if not folder_parts or not suggested_stem:
+    if not suggested_stem:
         return None
 
     pdf_path = current_user.originals_dir.joinpath(*folder_parts, f"{suggested_stem}.pdf")
@@ -1846,6 +2148,15 @@ def resume_document_processing_jobs() -> None:
                 "processing_error": None,
                 "processing_completed_at": None,
             },
+        )
+        append_document_processing_event(
+            current_user,
+            document_id,
+            stage="queued",
+            status="queued",
+            level="warning",
+            message="Processamento retomado automaticamente após reinício do backend.",
+            progress=0,
         )
         enqueue_document_processing(current_user, document_id)
 
@@ -2797,15 +3108,18 @@ def search_result_from_saved_reference(reference: dict[str, Any], *, score: floa
         return None
     return SearchResult(
         document_id=document_id,
-        chunk_id=f"recent-{document_id}",
+        chunk_id=str(reference.get("chunk_id") or f"recent-{document_id}"),
         score=score,
-        snippet="",
+        snippet=str(reference.get("snippet") or ""),
         metadata={
             "title": reference.get("title") or reference.get("suggested_name") or "",
             "original_name": reference.get("original_name") or "",
             "classification": reference.get("classification") or "",
             "document_type": reference.get("document_type") or reference.get("classification") or "",
             "domain": reference.get("domain") or "",
+            "folder_path": reference.get("folder_path") or "",
+            "chunk_index": reference.get("chunk_index") or "",
+            "page": reference.get("page") or "",
             "aliases": json.dumps(reference.get("aliases") or [], ensure_ascii=False),
         },
         markdown_path=reference.get("markdown_path"),
@@ -3322,10 +3636,15 @@ def save_session_turn(
             "original_name": reference.metadata.get("original_name") or "",
             "markdown_path": reference.markdown_path,
             "pdf_path": reference.pdf_path,
+            "folder_path": reference.metadata.get("folder_path") or "",
             "classification": reference.classification,
             "document_type": reference.metadata.get("document_type") or reference.classification,
             "domain": reference.metadata.get("domain") or "",
             "suggested_name": reference.suggested_name,
+            "chunk_id": reference.chunk_id,
+            "chunk_index": reference.metadata.get("chunk_index"),
+            "page": reference.metadata.get("page"),
+            "snippet": reference.snippet,
             "aliases": parse_reference_aliases(reference),
         }
         for reference in references
@@ -3473,9 +3792,14 @@ def choose_focus_reference(
         "original_name": best_reference.metadata.get("original_name") or "",
         "markdown_path": best_reference.markdown_path,
         "pdf_path": best_reference.pdf_path,
+        "folder_path": best_reference.metadata.get("folder_path") or "",
         "classification": best_reference.classification,
         "document_type": best_reference.metadata.get("document_type") or best_reference.classification,
         "domain": best_reference.metadata.get("domain") or "",
         "suggested_name": best_reference.suggested_name,
+        "chunk_id": best_reference.chunk_id,
+        "chunk_index": best_reference.metadata.get("chunk_index"),
+        "page": best_reference.metadata.get("page"),
+        "snippet": best_reference.snippet,
         "aliases": parse_reference_aliases(best_reference),
     }
