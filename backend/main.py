@@ -473,7 +473,12 @@ def extract_provider_ids(decoded_token: dict[str, Any]) -> list[str]:
 
 
 def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContext:
-    uid = str(decoded_token.get("uid") or "").strip()
+    uid = str(
+        decoded_token.get("uid")
+        or decoded_token.get("sub")
+        or decoded_token.get("user_id")
+        or ""
+    ).strip()
     if not uid:
         raise HTTPException(status_code=401, detail="Firebase token does not contain a valid uid.")
 
