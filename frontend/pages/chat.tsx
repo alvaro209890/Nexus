@@ -583,7 +583,6 @@ export default function ChatPage() {
         chunkLabel={viewerReference?.chunk_index || viewerReference?.chunk_id}
         snippet={viewerReference?.snippet}
         folderPath={viewerReference?.folder_path}
-        pdfPath={viewerReference?.pdf_path}
       />
     </div>
   );

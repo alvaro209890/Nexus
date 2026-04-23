@@ -558,6 +558,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .dialog-panel {
   width: min(100%, 36rem);
+  max-height: calc(100vh - 3rem);
   border-radius: 1.5rem;
   border: 1px solid var(--border-soft);
   background: var(--bg-elevated);
@@ -586,6 +587,7 @@ h1, h2, h3, h4, h5, h6 {
 .dialog-content {
   padding: 1.5rem;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -593,6 +595,7 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 1rem;
   padding: 1.25rem 1.5rem;
   border-top: 1px solid var(--border-soft);

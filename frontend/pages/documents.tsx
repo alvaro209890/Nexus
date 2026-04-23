@@ -568,7 +568,6 @@ export default function DocumentsPage() {
         chunkLabel={null}
         snippet={viewerDocument?.summary}
         folderPath={viewerDocument?.folder_path}
-        pdfPath={viewerDocument?.pdf_path}
       />
     </div>
   );

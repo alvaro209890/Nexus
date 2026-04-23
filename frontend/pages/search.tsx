@@ -243,12 +243,14 @@ export default function SearchPage() {
 
             <DetailField label="Caminho em Arquivos">
               <span className="break-all">
-                {resolveFolderPath(selectedResult) ? `Arquivos / ${resolveFolderPath(selectedResult)}` : "Arquivos / Meu Disco"}
+                {buildAccountFilePath(resolveFolderPath(selectedResult), resolveOriginalName(selectedResult))}
               </span>
             </DetailField>
 
-            <DetailField label="Caminho do PDF">
-              <span className="break-all">{selectedResult.pdf_path || "--"}</span>
+            <DetailField label="Pasta na conta">
+              <span className="break-all">
+                {resolveFolderPath(selectedResult) ? `Meu Disco / ${resolveFolderPath(selectedResult)}` : "Meu Disco"}
+              </span>
             </DetailField>
 
             {selectedResult.markdown_path && (
@@ -281,7 +283,6 @@ export default function SearchPage() {
         chunkLabel={viewerResult ? resolveChunkLabel(viewerResult) : null}
         snippet={viewerResult?.snippet}
         folderPath={viewerResult ? resolveFolderPath(viewerResult) : null}
-        pdfPath={viewerResult?.pdf_path}
       />
     </div>
   );
@@ -343,6 +344,12 @@ function buildFilesHref(result: SearchResult): string {
 
   const query = params.toString();
   return query ? `/files?${query}` : "/files";
+}
+
+function buildAccountFilePath(folderPath: string, originalName: string): string {
+  const cleanFolder = folderPath.trim().replace(/^\/+|\/+$/g, "");
+  const cleanName = originalName.trim() || "documento.pdf";
+  return cleanFolder ? `Meu Disco / ${cleanFolder} / ${cleanName}` : `Meu Disco / ${cleanName}`;
 }
 
 function labelForClassification(classification: string): string {

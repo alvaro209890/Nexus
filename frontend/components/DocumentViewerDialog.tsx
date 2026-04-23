@@ -14,7 +14,6 @@ type DocumentViewerDialogProps = {
   chunkLabel?: string | number | null;
   snippet?: string | null;
   folderPath?: string | null;
-  pdfPath?: string | null;
   extraActions?: ReactNode;
 };
 
@@ -28,7 +27,6 @@ export function DocumentViewerDialog({
   chunkLabel,
   snippet,
   folderPath,
-  pdfPath,
   extraActions,
 }: DocumentViewerDialogProps) {
   const { getCurrentToken } = useAuth();
@@ -116,7 +114,7 @@ export function DocumentViewerDialog({
       title={title || originalName || "Visualizador"}
       description="Visualização interna do PDF com contexto do trecho referenciado."
       onClose={onClose}
-      panelClassName="!w-[min(96vw,78rem)]"
+      panelClassName="!w-[min(96vw,78rem)] max-h-[calc(100vh-3rem)]"
       contentClassName="!p-0"
       footer={(
         <>
@@ -130,7 +128,10 @@ export function DocumentViewerDialog({
         </>
       )}
     >
-      <div className="grid min-h-[72vh] grid-cols-1 overflow-hidden lg:grid-cols-[320px_1fr]">
+      <div
+        className="grid grid-cols-1 overflow-hidden lg:grid-cols-[320px_1fr]"
+        style={{ height: "min(72vh, calc(100vh - 11rem))" }}
+      >
         <div className="border-b border-white/10 bg-[rgba(20,25,33,0.82)] p-5 lg:border-b-0 lg:border-r">
           <div className="space-y-4">
             {error && (
@@ -150,18 +151,11 @@ export function DocumentViewerDialog({
             </div>
 
             <div className="space-y-1">
-              <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">Caminho em Arquivos</p>
+              <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">Caminho do arquivo</p>
               <p className="break-all text-xs text-slateblue/80">
-                {folderPath ? `Arquivos / ${folderPath}` : "Arquivos / Meu Disco"}
+                {buildAccountFilePath(folderPath, originalName)}
               </p>
             </div>
-
-            {pdfPath && (
-              <div className="space-y-1">
-                <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">Caminho físico</p>
-                <p className="break-all text-xs text-slateblue/80">{pdfPath}</p>
-              </div>
-            )}
 
             <div className="space-y-1">
               <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em] text-slateblue/55">Trecho citado</p>
@@ -201,4 +195,10 @@ function InfoField({ label, value }: { label: string; value: string }) {
       <p className="mt-1 text-sm text-white/90">{value}</p>
     </div>
   );
+}
+
+function buildAccountFilePath(folderPath: string | null | undefined, originalName: string): string {
+  const cleanFolder = (folderPath || "").trim().replace(/^\/+|\/+$/g, "");
+  const cleanName = (originalName || "documento.pdf").trim();
+  return cleanFolder ? `Meu Disco / ${cleanFolder} / ${cleanName}` : `Meu Disco / ${cleanName}`;
 }
