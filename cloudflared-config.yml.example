@@ -1,0 +1,9 @@
+tunnel: nexus
+credentials-file: /home/acer/.cloudflared/nexus.json
+
+ingress:
+  - hostname: api-nexus.cursar.space
+    service: http://localhost:8000
+  # Configure nexus.cursar.space as a custom domain in Firebase Hosting.
+  # Keep frontend hosting out of this tunnel unless you intentionally proxy it.
+  - service: http_status:404

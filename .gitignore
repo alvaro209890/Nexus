@@ -1,0 +1,13 @@
+.env
+backend/.env
+frontend/.env.local
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+data/chromadb/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
