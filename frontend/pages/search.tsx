@@ -247,12 +247,6 @@ export default function SearchPage() {
               </span>
             </DetailField>
 
-            <DetailField label="Pasta na conta">
-              <span className="break-all">
-                {resolveFolderPath(selectedResult) ? `Meu Disco / ${resolveFolderPath(selectedResult)}` : "Meu Disco"}
-              </span>
-            </DetailField>
-
             {selectedResult.markdown_path && (
               <DetailField label="Caminho do Markdown">
                 <span className="break-all">{selectedResult.markdown_path}</span>
