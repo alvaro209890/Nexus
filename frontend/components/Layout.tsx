@@ -18,6 +18,7 @@ export default function Layout({ children }: LayoutProps) {
     { label: "Início", path: "/", icon: <LayoutDashboard size={18} /> },
     { label: "Documentos", path: "/documents", icon: <FileText size={18} /> },
     { label: "Arquivos", path: "/files", icon: <FolderTree size={18} /> },
+    { label: "Notas", path: "/notes", icon: <FileText size={18} /> },
     { label: "Busca", path: "/search", icon: <Search size={18} /> },
     { label: "Chat", path: "/chat", icon: <MessageSquare size={18} /> },
   ];
@@ -150,4 +151,3 @@ export default function Layout({ children }: LayoutProps) {
     </div>
   );
 }
-

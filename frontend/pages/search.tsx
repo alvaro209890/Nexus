@@ -46,6 +46,7 @@ export default function SearchPage() {
   }
 
   async function handleDownload(result: SearchResult) {
+    if (isNoteResult(result)) return;
     const fallbackName = resolveOriginalName(result) || "documento.pdf";
 
     setDownloadingId(result.document_id);
@@ -105,7 +106,7 @@ export default function SearchPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             <p className="text-base font-semibold">Nenhum resultado ainda.</p>
-            <p className="max-w-md text-sm text-slateblue/70">Digite uma consulta para localizar trechos relevantes nos documentos indexados.</p>
+            <p className="max-w-md text-sm text-slateblue/70">Digite uma consulta para localizar trechos relevantes em documentos e notas indexados.</p>
           </div>
         )}
 
@@ -113,9 +114,9 @@ export default function SearchPage() {
           {results.map((res, index) => {
             const resultClassification = resolveClassification(res);
             const resultLabel = resolveDisplayName(res);
-            const resultPage = resolvePageLabel(res);
             const resultChunk = resolveChunkLabel(res, index);
             const resultFolderPath = resolveFolderPath(res);
+            const resultIsNote = isNoteResult(res);
 
             return (
               <button
@@ -128,12 +129,12 @@ export default function SearchPage() {
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
                       <div className="file-folder-icon !h-11 !w-11">
-                        <DocumentTypeIcon classification={resultClassification} />
+                        <DocumentTypeIcon classification={resultClassification} isNote={resultIsNote} />
                       </div>
                       <div className="min-w-0">
                         <StatusChip label={resultLabel} variant="info" />
                         <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
-                          {labelForClassification(resultClassification)}
+                          {labelForClassification(resultClassification, resultIsNote)}
                         </p>
                       </div>
                     </div>
@@ -143,7 +144,7 @@ export default function SearchPage() {
                   </div>
 
                   <p className="mb-3 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/45">
-                    {resultFolderPath ? `Arquivos / ${resultFolderPath}` : "Arquivos / Meu Disco"}
+                    {resultIsNote ? "Notas / Base privada" : resultFolderPath ? `Arquivos / ${resultFolderPath}` : "Arquivos / Meu Disco"}
                   </p>
 
                   <p className="flex-1 text-sm italic leading-relaxed text-ink/80">
@@ -156,7 +157,7 @@ export default function SearchPage() {
                   </p>
 
                   <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
-                    <span>Página {resultPage}</span>
+                    <span>{resultIsNote ? "Nota indexada" : `Página ${resolvePageLabel(res)}`}</span>
                     <span>Referência: #{resultChunk}</span>
                   </div>
                 </GlassCard>
@@ -173,8 +174,10 @@ export default function SearchPage() {
 
       <Dialog
         open={Boolean(selectedResult)}
-        title={selectedResult ? resolveDisplayName(selectedResult) : "Detalhes do documento"}
-        description="Veja os detalhes do documento encontrado, o caminho em Arquivos e faça o download do PDF."
+        title={selectedResult ? resolveDisplayName(selectedResult) : "Detalhes do item"}
+        description={selectedResult && isNoteResult(selectedResult)
+          ? "Veja os detalhes da nota encontrada e abra o item na aba Notas."
+          : "Veja os detalhes do documento encontrado, o caminho em Arquivos e faça o download do PDF."}
         onClose={() => {
           if (downloadingId) return;
           setSelectedResult(null);
@@ -182,22 +185,26 @@ export default function SearchPage() {
         }}
         footer={selectedResult ? (
           <>
-            <Link href={buildFilesHref(selectedResult)} className="ghost-button">
-              Abrir em Arquivos
+            <Link href={buildItemHref(selectedResult)} className="ghost-button">
+              {isNoteResult(selectedResult) ? "Abrir em Notas" : "Abrir em Arquivos"}
             </Link>
             <Button variant="ghost" type="button" onClick={() => setSelectedResult(null)} disabled={Boolean(downloadingId)}>
               Fechar
             </Button>
-            <Button variant="secondary" type="button" onClick={() => setViewerResult(selectedResult)} disabled={Boolean(downloadingId)}>
-              Visualizar PDF
-            </Button>
-            <Button
-              type="button"
-              isLoading={downloadingId === selectedResult.document_id}
-              onClick={() => void handleDownload(selectedResult)}
-            >
-              Baixar PDF
-            </Button>
+            {!isNoteResult(selectedResult) && (
+              <>
+                <Button variant="secondary" type="button" onClick={() => setViewerResult(selectedResult)} disabled={Boolean(downloadingId)}>
+                  Visualizar PDF
+                </Button>
+                <Button
+                  type="button"
+                  isLoading={downloadingId === selectedResult.document_id}
+                  onClick={() => void handleDownload(selectedResult)}
+                >
+                  Baixar PDF
+                </Button>
+              </>
+            )}
           </>
         ) : undefined}
       >
@@ -211,17 +218,19 @@ export default function SearchPage() {
 
             <div className="flex items-start gap-4">
               <div className="file-folder-icon !h-14 !w-14 shrink-0">
-                <DocumentTypeIcon classification={resolveClassification(selectedResult)} />
+                <DocumentTypeIcon classification={resolveClassification(selectedResult)} isNote={isNoteResult(selectedResult)} />
               </div>
               <div className="min-w-0">
                 <p className="text-lg font-semibold leading-tight text-white break-words">
                   {resolveDocumentTitle(selectedResult)}
                 </p>
-                <p className="mt-1 text-sm text-slateblue/75 break-all">
-                  {resolveOriginalName(selectedResult)}
-                </p>
+                {!isNoteResult(selectedResult) && (
+                  <p className="mt-1 text-sm text-slateblue/75 break-all">
+                    {resolveOriginalName(selectedResult)}
+                  </p>
+                )}
                 <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-slateblue/55">
-                  {labelForClassification(resolveClassification(selectedResult))}
+                  {labelForClassification(resolveClassification(selectedResult), isNoteResult(selectedResult))}
                 </p>
               </div>
             </div>
@@ -230,26 +239,40 @@ export default function SearchPage() {
               <DetailField label="Score">
                 {((selectedResult.score ?? 0) * 100).toFixed(1)}%
               </DetailField>
-              <DetailField label="Página">
-                {resolvePageLabel(selectedResult)}
-              </DetailField>
+              {isNoteResult(selectedResult) ? (
+                <DetailField label="Autor">
+                  {readMetadataText(selectedResult.metadata, "author") || "--"}
+                </DetailField>
+              ) : (
+                <DetailField label="Página">
+                  {resolvePageLabel(selectedResult)}
+                </DetailField>
+              )}
               <DetailField label="Referência do trecho">
                 #{resolveChunkLabel(selectedResult)}
               </DetailField>
-              <DetailField label="Documento ID">
+              <DetailField label={isNoteResult(selectedResult) ? "Nota ID" : "Documento ID"}>
                 <span className="break-all">{selectedResult.document_id}</span>
               </DetailField>
             </div>
 
-            <DetailField label="Caminho em Arquivos">
+            <DetailField label={isNoteResult(selectedResult) ? "Localização" : "Caminho em Arquivos"}>
               <span className="break-all">
-                {buildAccountFilePath(resolveFolderPath(selectedResult), resolveOriginalName(selectedResult))}
+                {isNoteResult(selectedResult)
+                  ? "Notas / Base privada"
+                  : buildAccountFilePath(resolveFolderPath(selectedResult), resolveOriginalName(selectedResult))}
               </span>
             </DetailField>
 
-            {selectedResult.markdown_path && (
+            {selectedResult.markdown_path && !isNoteResult(selectedResult) && (
               <DetailField label="Caminho do Markdown">
                 <span className="break-all">{selectedResult.markdown_path}</span>
+              </DetailField>
+            )}
+
+            {isNoteResult(selectedResult) && (
+              <DetailField label="Última atualização">
+                {readMetadataText(selectedResult.metadata, "updated_at") || "--"}
               </DetailField>
             )}
 
@@ -268,7 +291,7 @@ export default function SearchPage() {
       </Dialog>
 
       <DocumentViewerDialog
-        open={Boolean(viewerResult)}
+        open={Boolean(viewerResult && !isNoteResult(viewerResult))}
         onClose={() => setViewerResult(null)}
         documentId={viewerResult?.document_id}
         title={viewerResult ? resolveDocumentTitle(viewerResult) : "Visualizador"}
@@ -280,6 +303,10 @@ export default function SearchPage() {
       />
     </div>
   );
+}
+
+function isNoteResult(result: SearchResult): boolean {
+  return (result.source_kind || readMetadataText(result.metadata, "source_kind")).toLowerCase() === "note";
 }
 
 function readMetadataText(metadata: SearchResult["metadata"], key: string): string {
@@ -304,6 +331,7 @@ function resolveOriginalName(result: SearchResult): string {
 }
 
 function resolveClassification(result: SearchResult): string {
+  if (isNoteResult(result)) return "nota";
   return readMetadataText(result.metadata, "document_type")
     || readMetadataText(result.metadata, "classification")
     || result.classification
@@ -329,7 +357,12 @@ function resolveFolderPath(result: SearchResult): string {
   return readMetadataText(result.metadata, "folder_path");
 }
 
-function buildFilesHref(result: SearchResult): string {
+function buildItemHref(result: SearchResult): string {
+  if (isNoteResult(result)) {
+    const params = new URLSearchParams({ note: result.document_id });
+    return `/notes?${params.toString()}`;
+  }
+
   const params = new URLSearchParams();
   const folderPath = resolveFolderPath(result);
 
@@ -346,7 +379,8 @@ function buildAccountFilePath(folderPath: string, originalName: string): string 
   return cleanFolder ? `Meu Disco / ${cleanFolder} / ${cleanName}` : `Meu Disco / ${cleanName}`;
 }
 
-function labelForClassification(classification: string): string {
+function labelForClassification(classification: string, isNote = false): string {
+  if (isNote) return "Nota";
   const value = classification.trim().toLowerCase();
   if (value.includes("contrat")) return "Contrato";
   if (value.includes("polit")) return "Politica";
@@ -368,8 +402,17 @@ function DetailField({ label, children }: { label: string; children: ReactNode }
   );
 }
 
-function DocumentTypeIcon({ classification }: { classification: string }) {
+function DocumentTypeIcon({ classification, isNote = false }: { classification: string; isNote?: boolean }) {
   const value = classification.trim().toLowerCase();
+
+  if (isNote) {
+    return (
+      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 9h8M8 13h8M8 17h5" />
+      </svg>
+    );
+  }
 
   if (value.includes("contrat")) {
     return (

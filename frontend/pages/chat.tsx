@@ -1,4 +1,5 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
 import {
   ChatSessionDetail,
@@ -31,6 +32,7 @@ import {
 
 type ChatReference = {
   document_id?: string;
+  source_kind?: string;
   title?: string;
   classification?: string;
   suggested_name?: string;
@@ -44,6 +46,7 @@ type ChatReference = {
 };
 
 export default function ChatPage() {
+  const router = useRouter();
   const { user, authProfile, getCurrentToken } = useAuth();
   const [chatInput, setChatInput] = useState("");
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
@@ -527,7 +530,7 @@ export default function ChatPage() {
                   <FileText size={16} className="text-accent" />
                   Fontes do Contexto
                 </p>
-                <p className="mt-0.5 text-[0.65rem] text-secondary">Documentos utilizados na última resposta</p>
+                <p className="mt-0.5 text-[0.65rem] text-secondary">Documentos e notas utilizados na última resposta</p>
               </div>
               <button 
                 onClick={() => setIsContextOpen(false)} 
@@ -551,7 +554,13 @@ export default function ChatPage() {
                   <button
                     key={`${reference.document_id || "ref"}-${index}`}
                     type="button"
-                    onClick={() => setViewerReference(reference)}
+                    onClick={() => {
+                      if (reference.source_kind === "note" && reference.document_id) {
+                        void router.push(`/notes?note=${reference.document_id}`);
+                        return;
+                      }
+                      setViewerReference(reference);
+                    }}
                     className="w-full rounded-xl border border-border-soft bg-bg-surface p-3 text-left transition-colors hover:border-accent/40 group"
                   >
                     <p className="text-xs font-bold text-primary leading-snug mb-2 group-hover:text-accent transition-colors" title={reference.original_name || reference.title || reference.suggested_name}>
@@ -559,10 +568,12 @@ export default function ChatPage() {
                     </p>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[0.6rem] font-bold px-1.5 py-0.5 rounded-md bg-accent/10 text-accent border border-accent/20">
-                        {reference.classification || "DOCUMENTO"}
+                        {reference.source_kind === "note" ? "NOTA" : reference.classification || "DOCUMENTO"}
                       </span>
                       <span className="text-[0.65rem] font-semibold text-slateblue/70">
-                        {reference.page ? `Página ${reference.page}` : reference.chunk_index ? `Chunk ${reference.chunk_index}` : "Abrir PDF"}
+                        {reference.source_kind === "note"
+                          ? "Abrir nota"
+                          : reference.page ? `Página ${reference.page}` : reference.chunk_index ? `Chunk ${reference.chunk_index}` : "Abrir PDF"}
                       </span>
                     </div>
                   </button>
@@ -574,7 +585,7 @@ export default function ChatPage() {
       </div>
 
       <DocumentViewerDialog
-        open={Boolean(viewerReference)}
+        open={Boolean(viewerReference && viewerReference.source_kind !== "note")}
         onClose={() => setViewerReference(null)}
         documentId={viewerReference?.document_id}
         title={viewerReference?.title || viewerReference?.suggested_name || "Visualizador"}
@@ -608,6 +619,7 @@ function extractLatestReferences(messages: PersistedChatMessage[]): ChatReferenc
     }
     return message.references.map((reference) => ({
       document_id: typeof reference.document_id === "string" ? reference.document_id : undefined,
+      source_kind: typeof reference.source_kind === "string" ? reference.source_kind : undefined,
       title: typeof reference.title === "string" ? reference.title : undefined,
       classification: typeof reference.classification === "string" ? reference.classification : undefined,
       suggested_name: typeof reference.suggested_name === "string" ? reference.suggested_name : undefined,

@@ -110,6 +110,8 @@ class AuthenticatedUserContext:
     folders_path: Path
     processing_events_dir: Path
     memory_dir: Path
+    notes_dir: Path
+    note_versions_dir: Path
     collection_name: str
 
 
@@ -164,10 +166,12 @@ class SearchResult(BaseModel):
     pdf_path: str | None = None
     classification: str | None = None
     suggested_name: str | None = None
+    source_kind: str = "document"
 
 
 class DocumentRecord(BaseModel):
     document_id: str
+    source_kind: str = "document"
     sha256: str
     original_name: str
     classification: str
@@ -219,6 +223,47 @@ class DocumentProcessingDetail(BaseModel):
     is_processing: bool = False
 
 
+class NoteRecord(BaseModel):
+    note_id: str
+    source_kind: str = "note"
+    title: str
+    content: str
+    tags: list[str] = Field(default_factory=list)
+    author: str | None = None
+    created_at: str
+    updated_at: str
+    current_version: int = 1
+    version_count: int = 1
+    summary: str = ""
+    markdown_path: str
+    chunks_indexed: int = 0
+    size_bytes: int | None = None
+
+
+class NoteCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+
+
+class NoteUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    content: str | None = Field(default=None, min_length=1)
+    tags: list[str] | None = None
+
+
+class NoteVersionRecord(BaseModel):
+    note_id: str
+    version: int
+    title: str
+    content: str
+    tags: list[str] = Field(default_factory=list)
+    author: str | None = None
+    created_at: str
+    updated_at: str
+    snapshot_at: str
+
+
 class AuthenticatedUserProfile(BaseModel):
     uid: str
     email: str | None = None
@@ -260,6 +305,8 @@ class LookupIntent(BaseModel):
 
 
 ACTIVE_PROCESSING_STATUSES = {"queued", "extracting", "classifying", "indexing"}
+DOCUMENT_SOURCE_KIND = "document"
+NOTE_SOURCE_KIND = "note"
 
 
 def warn_missing_provider_keys() -> None:
@@ -429,8 +476,12 @@ async def list_documents(
     limit: int = Query(default=50, ge=1, le=500),
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> list[DocumentRecord]:
-    records = read_manifest_records(current_user)
-    visible_records = [hydrate_document_record(record) for record in records[-limit:]][::-1]
+    records = [
+        hydrate_document_record(record)
+        for record in read_manifest_records(current_user)
+        if not is_note_record(record)
+    ]
+    visible_records = records[-limit:][::-1]
     return [DocumentRecord(**record) for record in visible_records]
 
 
@@ -457,6 +508,90 @@ async def list_folders(
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> list[FolderRecord]:
     return [FolderRecord(**folder) for folder in read_folder_records(current_user)]
+
+
+@app.get("/notes", response_model=list[NoteRecord])
+async def list_notes(
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> list[NoteRecord]:
+    records = [
+        hydrate_note_record(record)
+        for record in read_manifest_records(current_user)
+        if is_note_record(record)
+    ]
+    records.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return [NoteRecord(**record) for record in records]
+
+
+@app.get("/notes/{note_id}", response_model=NoteRecord)
+async def get_note(
+    note_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> NoteRecord:
+    record = find_note_by_id(current_user, note_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+    return NoteRecord(**record)
+
+
+@app.post("/notes", response_model=NoteRecord)
+async def create_note_endpoint(
+    request: NoteCreateRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> NoteRecord:
+    return NoteRecord(**create_note(current_user, request))
+
+
+@app.patch("/notes/{note_id}", response_model=NoteRecord)
+async def update_note_endpoint(
+    note_id: str,
+    request: NoteUpdateRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> NoteRecord:
+    if request.title is None and request.content is None and request.tags is None:
+        raise HTTPException(status_code=400, detail="At least one note field must be updated.")
+    return NoteRecord(**update_note(current_user, note_id, request))
+
+
+@app.delete("/notes/{note_id}")
+async def delete_note_endpoint(
+    note_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> dict[str, str]:
+    record = find_note_by_id(current_user, note_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+
+    remove_document_from_vector_store(current_user, note_id)
+    prune_document_annotations(current_user, note_id)
+    delete_note_storage(current_user, note_id, record)
+    if not remove_manifest_record(current_user, note_id):
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+    return {"note_id": note_id, "status": "deleted"}
+
+
+@app.get("/notes/{note_id}/versions", response_model=list[NoteVersionRecord])
+async def list_note_versions(
+    note_id: str,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> list[NoteVersionRecord]:
+    if find_note_by_id(current_user, note_id) is None:
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+    return [NoteVersionRecord(**item) for item in read_note_versions(current_user, note_id)]
+
+
+@app.get("/notes/{note_id}/versions/{version}", response_model=NoteVersionRecord)
+async def get_note_version(
+    note_id: str,
+    version: int,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> NoteVersionRecord:
+    if version < 1:
+        raise HTTPException(status_code=400, detail="Version must be greater than zero.")
+    for snapshot in read_note_versions(current_user, note_id):
+        if int(snapshot.get("version") or 0) == version:
+            return NoteVersionRecord(**snapshot)
+    raise HTTPException(status_code=404, detail="Note version not found for this user.")
 
 
 @app.post("/folders", response_model=FolderRecord)
@@ -857,6 +992,8 @@ def build_user_context(decoded_token: dict[str, Any]) -> AuthenticatedUserContex
         folders_path=user_dir / "folders.json",
         processing_events_dir=user_dir / "processing-events",
         memory_dir=user_dir / "memory",
+        notes_dir=user_dir / "notes" / "current",
+        note_versions_dir=user_dir / "notes" / "versions",
         collection_name=collection_name_for_user(uid),
     )
 
@@ -869,6 +1006,8 @@ def ensure_user_storage(current_user: AuthenticatedUserContext) -> None:
         current_user.incoming_dir,
         current_user.processing_events_dir,
         current_user.memory_dir,
+        current_user.notes_dir,
+        current_user.note_versions_dir,
         chat_sessions_data_dir(current_user),
     ):
         directory.mkdir(parents=True, exist_ok=True)
@@ -907,6 +1046,8 @@ def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any
         "folders_path": str(current_user.folders_path),
         "processing_events_dir": str(current_user.processing_events_dir),
         "memory_dir": str(current_user.memory_dir),
+        "notes_dir": str(current_user.notes_dir),
+        "note_versions_dir": str(current_user.note_versions_dir),
         "collection_name": current_user.collection_name,
     }
     current_user.profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1502,6 +1643,229 @@ def ensure_unique_path(path: Path) -> Path:
     raise HTTPException(status_code=500, detail=f"Could not create unique path for {path.name}.")
 
 
+def record_source_kind(record: dict[str, Any]) -> str:
+    source_kind = str(record.get("source_kind") or DOCUMENT_SOURCE_KIND).strip().lower()
+    return NOTE_SOURCE_KIND if source_kind == NOTE_SOURCE_KIND else DOCUMENT_SOURCE_KIND
+
+
+def is_note_record(record: dict[str, Any]) -> bool:
+    return record_source_kind(record) == NOTE_SOURCE_KIND
+
+
+def normalize_note_tags(value: Any) -> list[str]:
+    return dedupe_text_list(normalize_string_list(value), limit=18)
+
+
+def note_storage_path(current_user: AuthenticatedUserContext, note_id: str) -> Path:
+    safe_id = safe_slug(note_id, fallback="note")
+    return current_user.notes_dir / f"{safe_id}.md"
+
+
+def note_versions_path(current_user: AuthenticatedUserContext, note_id: str) -> Path:
+    safe_id = safe_slug(note_id, fallback="note")
+    return current_user.note_versions_dir / safe_id
+
+
+def note_version_path(current_user: AuthenticatedUserContext, note_id: str, version: int) -> Path:
+    return note_versions_path(current_user, note_id) / f"v{version:04d}.json"
+
+
+def note_summary(content: str, *, limit: int = 220) -> str:
+    cleaned = re.sub(r"\s+", " ", content).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def note_author_for_user(current_user: AuthenticatedUserContext) -> str:
+    return current_user.display_name or current_user.email or current_user.uid
+
+
+def write_note_content(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+def read_note_content(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def build_note_record(
+    *,
+    note_id: str,
+    title: str,
+    content: str,
+    tags: list[str],
+    author: str,
+    created_at: str,
+    updated_at: str,
+    current_version: int,
+    markdown_path: Path,
+    chunks_indexed: int,
+) -> dict[str, Any]:
+    clean_title = re.sub(r"\s+", " ", title).strip()[:160] or "Nova nota"
+    clean_content = content.strip()
+    summary = note_summary(clean_content)
+    return {
+        "document_id": note_id,
+        "note_id": note_id,
+        "source_kind": NOTE_SOURCE_KIND,
+        "sha256": "",
+        "original_name": clean_title,
+        "classification": "nota",
+        "document_type": "nota",
+        "domain": "notas",
+        "suggested_name": clean_title,
+        "title": clean_title,
+        "author": author,
+        "date": updated_at[:10],
+        "year": updated_at[:4] if len(updated_at) >= 4 else "sem-data",
+        "technologies": [],
+        "summary": summary,
+        "folder_path": "",
+        "tags": tags,
+        "aliases": dedupe_text_list([clean_title, *tags], limit=12),
+        "entities": [],
+        "project": None,
+        "classification_confidence": 1.0,
+        "folder_confidence": 1.0,
+        "title_confidence": 1.0,
+        "review_status": "auto_ok",
+        "processing_status": "ready",
+        "processing_progress": 100,
+        "processing_error": None,
+        "processing_started_at": None,
+        "processing_completed_at": updated_at,
+        "pdf_path": "",
+        "markdown_path": str(markdown_path),
+        "chunks_indexed": chunks_indexed,
+        "uploaded_at": created_at,
+        "size_bytes": len(clean_content.encode("utf-8")),
+        "content": clean_content,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "current_version": current_version,
+        "version_count": current_version,
+    }
+
+
+def create_note_version_snapshot(
+    current_user: AuthenticatedUserContext,
+    *,
+    note_id: str,
+    version: int,
+    title: str,
+    content: str,
+    tags: list[str],
+    author: str,
+    created_at: str,
+    updated_at: str,
+) -> dict[str, Any]:
+    snapshot = {
+        "note_id": note_id,
+        "version": version,
+        "title": title,
+        "content": content,
+        "tags": tags,
+        "author": author,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "snapshot_at": updated_at,
+    }
+    snapshot_path = note_version_path(current_user, note_id, version)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    return snapshot
+
+
+def read_note_versions(current_user: AuthenticatedUserContext, note_id: str) -> list[dict[str, Any]]:
+    versions_dir = note_versions_path(current_user, note_id)
+    if not versions_dir.exists():
+        return []
+
+    snapshots: list[dict[str, Any]] = []
+    for path in sorted(versions_dir.glob("v*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and str(payload.get("note_id") or "").strip() == note_id:
+            snapshots.append(payload)
+    snapshots.sort(key=lambda item: int(item.get("version") or 0), reverse=True)
+    return snapshots
+
+
+def hydrate_note_record(record: dict[str, Any]) -> dict[str, Any]:
+    hydrated = dict(record)
+    note_id = str(hydrated.get("note_id") or hydrated.get("document_id") or "").strip()
+    title = re.sub(r"\s+", " ", str(hydrated.get("title") or hydrated.get("suggested_name") or "Nova nota")).strip()
+    markdown_path = Path(str(hydrated.get("markdown_path") or "")).expanduser()
+    content = str(hydrated.get("content") or "").strip()
+    if not content and markdown_path:
+        content = read_note_content(markdown_path).strip()
+
+    created_at = str(hydrated.get("created_at") or hydrated.get("uploaded_at") or datetime.now(UTC).isoformat())
+    updated_at = str(
+        hydrated.get("updated_at")
+        or hydrated.get("processing_completed_at")
+        or created_at
+    )
+    tags = normalize_note_tags(hydrated.get("tags"))
+    current_version = max(1, int(hydrated.get("current_version") or hydrated.get("version_count") or 1))
+    size_bytes = hydrated.get("size_bytes")
+    if size_bytes is None and content:
+        size_bytes = len(content.encode("utf-8"))
+
+    hydrated.update(
+        {
+            "document_id": note_id,
+            "note_id": note_id,
+            "source_kind": NOTE_SOURCE_KIND,
+            "classification": "nota",
+            "document_type": "nota",
+            "domain": "notas",
+            "original_name": title,
+            "suggested_name": title,
+            "title": title,
+            "author": str(hydrated.get("author") or "").strip() or None,
+            "date": updated_at[:10],
+            "year": updated_at[:4] if len(updated_at) >= 4 else "sem-data",
+            "technologies": [],
+            "tags": tags,
+            "aliases": dedupe_text_list([title, *tags], limit=12),
+            "entities": [],
+            "project": None,
+            "summary": str(hydrated.get("summary") or note_summary(content)),
+            "review_status": "auto_ok",
+            "processing_status": "ready",
+            "processing_progress": 100,
+            "processing_error": None,
+            "processing_started_at": None,
+            "processing_completed_at": updated_at,
+            "folder_path": "",
+            "pdf_path": "",
+            "markdown_path": str(markdown_path) if str(markdown_path) else "",
+            "chunks_indexed": int(hydrated.get("chunks_indexed") or 0),
+            "uploaded_at": created_at,
+            "size_bytes": size_bytes,
+            "content": content,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "current_version": current_version,
+            "version_count": max(current_version, int(hydrated.get("version_count") or current_version)),
+        }
+    )
+    return hydrated
+
+
+def hydrate_manifest_record(record: dict[str, Any]) -> dict[str, Any]:
+    if is_note_record(record):
+        return hydrate_note_record(record)
+    return hydrate_document_record(record)
+
+
 def build_queued_document_record(
     *,
     document_id: str,
@@ -1513,6 +1877,7 @@ def build_queued_document_record(
     title = Path(original_name).stem
     return {
         "document_id": document_id,
+        "source_kind": DOCUMENT_SOURCE_KIND,
         "sha256": file_hash,
         "original_name": original_name,
         "classification": "outro",
@@ -1564,6 +1929,7 @@ def build_document_record(
 
     return {
         "document_id": document_id,
+        "source_kind": DOCUMENT_SOURCE_KIND,
         "sha256": file_hash,
         "original_name": original_name,
         "classification": file_plan["classification"],
@@ -2037,6 +2403,8 @@ def list_recoverable_document_jobs() -> list[tuple[AuthenticatedUserContext, str
             continue
 
         for record in read_manifest_records(current_user):
+            if is_note_record(record):
+                continue
             hydrated = hydrate_document_record(record)
             status = str(hydrated.get("processing_status") or "ready")
             document_id = str(hydrated.get("document_id") or "").strip()
@@ -2070,6 +2438,8 @@ def build_user_context_from_storage(user_dir: Path) -> AuthenticatedUserContext 
         folders_path=Path(str(payload.get("folders_path") or user_dir / "folders.json")),
         processing_events_dir=Path(str(payload.get("processing_events_dir") or user_dir / "processing-events")),
         memory_dir=Path(str(payload.get("memory_dir") or user_dir / "memory")),
+        notes_dir=Path(str(payload.get("notes_dir") or user_dir / "notes" / "current")),
+        note_versions_dir=Path(str(payload.get("note_versions_dir") or user_dir / "notes" / "versions")),
         collection_name=str(payload.get("collection_name") or collection_name_for_user(uid)),
     )
 
@@ -2254,6 +2624,206 @@ def remove_manifest_record(current_user: AuthenticatedUserContext, document_id: 
     return removed
 
 
+def index_note_record(
+    current_user: AuthenticatedUserContext,
+    *,
+    note_id: str,
+    title: str,
+    content: str,
+    tags: list[str],
+    author: str,
+    created_at: str,
+    updated_at: str,
+    markdown_path: Path,
+) -> int:
+    chunks = split_text(content.strip())
+    if not chunks:
+        raise HTTPException(status_code=400, detail="A nota precisa ter conteúdo indexável.")
+
+    embeddings = embed_texts(chunks)
+    collection = get_chroma_collection(current_user.collection_name)
+    ai_result = {
+        "metadata": {
+            "title": title,
+            "author": author,
+            "date": updated_at[:10],
+            "project": "",
+            "technologies": [],
+            "tags": tags,
+            "summary": note_summary(content),
+        },
+        "classification": "nota",
+        "document_type": "nota",
+        "domain": "notas",
+        "aliases": [title, *tags],
+        "entities": [],
+        "review_status": "auto_ok",
+        "source_kind": NOTE_SOURCE_KIND,
+    }
+    metadatas = [
+        build_chroma_metadata(
+            current_user=current_user,
+            document_id=note_id,
+            file_hash="",
+            chunk_index=index,
+            pdf_path=Path(""),
+            markdown_path=markdown_path,
+            original_name=title,
+            suggested_name=title,
+            year=updated_at[:4] if len(updated_at) >= 4 else "sem-data",
+            ai_result=ai_result,
+        )
+        for index in range(len(chunks))
+    ]
+    for metadata in metadatas:
+        metadata["source_kind"] = NOTE_SOURCE_KIND
+        metadata["author"] = author
+        metadata["created_at"] = created_at
+        metadata["updated_at"] = updated_at
+        metadata["note_id"] = note_id
+        metadata["pdf_path"] = ""
+
+    try:
+        collection.delete(where={"document_id": note_id})
+    except Exception:
+        logger.debug("Chroma cleanup skipped for note_id=%s", note_id)
+
+    collection.upsert(
+        ids=[f"{note_id}:{index}" for index in range(len(chunks))],
+        documents=chunks,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
+    return len(chunks)
+
+
+def create_note(
+    current_user: AuthenticatedUserContext,
+    request: NoteCreateRequest,
+) -> dict[str, Any]:
+    ensure_user_storage(current_user)
+    note_id = str(uuid.uuid4())
+    now = datetime.now(UTC).isoformat()
+    title = re.sub(r"\s+", " ", request.title).strip()
+    content = request.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="Título e conteúdo são obrigatórios para a nota.")
+
+    tags = normalize_note_tags(request.tags)
+    author = note_author_for_user(current_user)
+    markdown_path = note_storage_path(current_user, note_id)
+    write_note_content(markdown_path, content)
+    chunks_indexed = index_note_record(
+        current_user,
+        note_id=note_id,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=now,
+        updated_at=now,
+        markdown_path=markdown_path,
+    )
+    record = build_note_record(
+        note_id=note_id,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=now,
+        updated_at=now,
+        current_version=1,
+        markdown_path=markdown_path,
+        chunks_indexed=chunks_indexed,
+    )
+    append_manifest_record(current_user, record)
+    create_note_version_snapshot(
+        current_user,
+        note_id=note_id,
+        version=1,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=now,
+        updated_at=now,
+    )
+    return hydrate_note_record(record)
+
+
+def update_note(
+    current_user: AuthenticatedUserContext,
+    note_id: str,
+    request: NoteUpdateRequest,
+) -> dict[str, Any]:
+    existing = find_note_by_id(current_user, note_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+
+    title = re.sub(r"\s+", " ", str(request.title or existing.get("title") or "")).strip()
+    content = str(request.content if request.content is not None else existing.get("content") or "").strip()
+    if request.tags is None:
+        tags = normalize_note_tags(existing.get("tags"))
+    else:
+        tags = normalize_note_tags(request.tags)
+
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="Título e conteúdo são obrigatórios para a nota.")
+
+    created_at = str(existing.get("created_at") or existing.get("uploaded_at") or datetime.now(UTC).isoformat())
+    updated_at = datetime.now(UTC).isoformat()
+    current_version = max(1, int(existing.get("current_version") or existing.get("version_count") or 1)) + 1
+    author = str(existing.get("author") or note_author_for_user(current_user))
+    markdown_path = Path(str(existing.get("markdown_path") or note_storage_path(current_user, note_id)))
+
+    write_note_content(markdown_path, content)
+    chunks_indexed = index_note_record(
+        current_user,
+        note_id=note_id,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=created_at,
+        updated_at=updated_at,
+        markdown_path=markdown_path,
+    )
+    updated_record = build_note_record(
+        note_id=note_id,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=created_at,
+        updated_at=updated_at,
+        current_version=current_version,
+        markdown_path=markdown_path,
+        chunks_indexed=chunks_indexed,
+    )
+    stored = update_manifest_record(current_user, note_id, updated_record)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Note not found for this user.")
+    create_note_version_snapshot(
+        current_user,
+        note_id=note_id,
+        version=current_version,
+        title=title,
+        content=content,
+        tags=tags,
+        author=author,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    return hydrate_note_record(stored)
+
+
+def delete_note_storage(current_user: AuthenticatedUserContext, note_id: str, record: dict[str, Any]) -> None:
+    delete_document_files(current_user, record)
+    versions_dir = note_versions_path(current_user, note_id)
+    if versions_dir.exists():
+        shutil.rmtree(versions_dir, ignore_errors=True)
+
+
 def read_folder_records(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:
     ensure_user_storage(current_user)
     try:
@@ -2293,6 +2863,7 @@ def write_folder_records(current_user: AuthenticatedUserContext, folders: list[d
 
 def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
     hydrated = dict(record)
+    hydrated["source_kind"] = DOCUMENT_SOURCE_KIND
     document_type = safe_slug(
         str(hydrated.get("document_type") or hydrated.get("classification") or "outro"),
         "outro",
@@ -2390,19 +2961,35 @@ def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
 
 def find_document_by_hash(current_user: AuthenticatedUserContext, file_hash: str) -> dict[str, Any] | None:
     for record in reversed(read_manifest_records(current_user)):
+        if is_note_record(record):
+            continue
         if record.get("sha256") == file_hash:
             return hydrate_document_record(record)
     return None
 
 
-def find_document_by_id(current_user: AuthenticatedUserContext, document_id: str) -> dict[str, Any] | None:
-    clean_id = document_id.strip()
+def find_manifest_record_by_id(current_user: AuthenticatedUserContext, record_id: str) -> dict[str, Any] | None:
+    clean_id = record_id.strip()
     if not clean_id:
         return None
     for record in reversed(read_manifest_records(current_user)):
         if str(record.get("document_id") or "").strip() == clean_id:
-            return hydrate_document_record(record)
+            return hydrate_manifest_record(record)
     return None
+
+
+def find_document_by_id(current_user: AuthenticatedUserContext, document_id: str) -> dict[str, Any] | None:
+    record = find_manifest_record_by_id(current_user, document_id)
+    if record is None or is_note_record(record):
+        return None
+    return record
+
+
+def find_note_by_id(current_user: AuthenticatedUserContext, note_id: str) -> dict[str, Any] | None:
+    record = find_manifest_record_by_id(current_user, note_id)
+    if record is None or not is_note_record(record):
+        return None
+    return record
 
 
 def remove_document_from_vector_store(current_user: AuthenticatedUserContext, document_id: str) -> None:
@@ -2443,6 +3030,7 @@ def delete_document_files(current_user: AuthenticatedUserContext, record: dict[s
         current_user.originals_dir,
         current_user.markdown_dir,
         current_user.incoming_dir,
+        current_user.notes_dir,
     ]
     for field_name in ("pdf_path", "markdown_path"):
         raw_path = str(record.get(field_name) or "").strip()
@@ -2625,10 +3213,17 @@ def build_chroma_metadata(
     technologies = metadata.get("technologies") if isinstance(metadata, dict) else []
     if not isinstance(technologies, list):
         technologies = []
+    source_kind = str(ai_result.get("source_kind") or DOCUMENT_SOURCE_KIND)
+    folder_path = ""
+    if source_kind == NOTE_SOURCE_KIND:
+        folder_path = ""
+    else:
+        folder_path = "/".join(markdown_path.relative_to(current_user.markdown_dir).parts[:-1])
 
     return {
         "owner_uid": current_user.uid,
         "document_id": document_id,
+        "source_kind": source_kind,
         "sha256": file_hash,
         "chunk_index": chunk_index,
         "original_name": original_name,
@@ -2647,25 +3242,31 @@ def build_chroma_metadata(
         "project": str(metadata.get("project") or ""),
         "summary": str(metadata.get("summary") or ""),
         "review_status": str(ai_result.get("review_status") or "auto_ok"),
-        "folder_path": "/".join(markdown_path.relative_to(current_user.markdown_dir).parts[:-1]),
+        "folder_path": folder_path,
         "pdf_path": str(pdf_path),
         "markdown_path": str(markdown_path),
     }
 
 
 def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
-    hydrated = hydrate_document_record(record)
+    hydrated = hydrate_manifest_record(record)
     return {
         "document_id": str(hydrated.get("document_id") or ""),
+        "note_id": str(hydrated.get("note_id") or ""),
+        "source_kind": str(hydrated.get("source_kind") or DOCUMENT_SOURCE_KIND),
         "title": str(hydrated.get("title") or ""),
         "original_name": str(hydrated.get("original_name") or ""),
         "suggested_name": str(hydrated.get("suggested_name") or ""),
         "classification": str(hydrated.get("classification") or ""),
         "document_type": str(hydrated.get("document_type") or ""),
         "domain": str(hydrated.get("domain") or ""),
+        "author": str(hydrated.get("author") or ""),
         "year": str(hydrated.get("year") or ""),
         "project": str(hydrated.get("project") or ""),
         "folder_path": str(hydrated.get("folder_path") or ""),
+        "created_at": str(hydrated.get("created_at") or hydrated.get("uploaded_at") or ""),
+        "updated_at": str(hydrated.get("updated_at") or hydrated.get("processing_completed_at") or ""),
+        "current_version": int(hydrated.get("current_version") or 0),
         "tags": json.dumps(hydrated.get("tags") or [], ensure_ascii=False),
         "aliases": json.dumps(hydrated.get("aliases") or [], ensure_ascii=False),
         "entities": json.dumps(hydrated.get("entities") or [], ensure_ascii=False),
@@ -2676,19 +3277,43 @@ def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def manifest_search_result(record: dict[str, Any], score: float) -> SearchResult:
+def manifest_search_result(record: dict[str, Any], score: float, *, snippet: str | None = None) -> SearchResult:
     metadata = record_metadata_payload(record)
+    source_kind = str(record.get("source_kind") or DOCUMENT_SOURCE_KIND)
+    default_snippet = str(record.get("summary") or record.get("suggested_name") or record.get("original_name") or "")[:800]
     return SearchResult(
         document_id=str(record.get("document_id") or ""),
         chunk_id=f"{record.get('document_id')}:manifest",
         score=score,
-        snippet=str(record.get("summary") or record.get("suggested_name") or record.get("original_name") or "")[:800],
+        snippet=(snippet or default_snippet)[:800],
         metadata=metadata,
         markdown_path=record.get("markdown_path"),
         pdf_path=record.get("pdf_path"),
         classification=record.get("classification"),
         suggested_name=record.get("suggested_name"),
+        source_kind=source_kind,
     )
+
+
+def build_note_search_snippet(content: str, terms: list[str]) -> str:
+    clean_content = re.sub(r"\s+", " ", content).strip()
+    if not clean_content:
+        return ""
+    lowered = clean_content.lower()
+    for term in terms:
+        if not term:
+            continue
+        position = lowered.find(term.lower())
+        if position >= 0:
+            start = max(0, position - 120)
+            end = min(len(clean_content), position + 220)
+            snippet = clean_content[start:end].strip()
+            if start > 0:
+                snippet = "..." + snippet
+            if end < len(clean_content):
+                snippet += "..."
+            return snippet
+    return clean_content[:320] + ("..." if len(clean_content) > 320 else "")
 
 
 def metadata_search(
@@ -2697,7 +3322,7 @@ def metadata_search(
     limit: int = 5,
     lookup_intent: LookupIntent | None = None,
 ) -> list[SearchResult]:
-    records = [hydrate_document_record(record) for record in read_manifest_records(current_user)]
+    records = [hydrate_manifest_record(record) for record in read_manifest_records(current_user)]
     if not records:
         return []
 
@@ -2712,8 +3337,9 @@ def metadata_search(
     if not normalized_terms:
         return []
 
-    results: list[tuple[float, dict[str, Any]]] = []
+    results: list[tuple[float, dict[str, Any], str]] = []
     for record in records:
+        source_kind = record_source_kind(record)
         title = normalize_search_text(str(record.get("title") or ""))
         original_name = normalize_search_text(str(record.get("original_name") or ""))
         suggested_name = normalize_search_text(str(record.get("suggested_name") or ""))
@@ -2723,11 +3349,14 @@ def metadata_search(
         domain = normalize_search_text(str(record.get("domain") or ""))
         folder_path = normalize_search_text(str(record.get("folder_path") or ""))
         classification = normalize_search_text(str(record.get("document_type") or record.get("classification") or ""))
+        author = normalize_search_text(str(record.get("author") or ""))
         year = str(record.get("year") or "").strip()
         tags = " ".join(str(item) for item in record.get("tags") or [])
         tags_normalized = normalize_search_text(tags)
         summary = normalize_search_text(str(record.get("summary") or ""))
         review_status = str(record.get("review_status") or "")
+        note_content_raw = str(record.get("content") or "") if source_kind == NOTE_SOURCE_KIND else ""
+        note_content = normalize_search_text(note_content_raw)
 
         score = 0.0
         for term in normalized_terms:
@@ -2739,6 +3368,8 @@ def metadata_search(
                 score += 4.5
             if term and term in title:
                 score += 4.0
+            if term and term in author:
+                score += 2.4
             if term and term in project:
                 score += 2.8
             if term and term in domain:
@@ -2753,6 +3384,8 @@ def metadata_search(
                 score += 1.9
             if term and term in summary:
                 score += 1.0
+            if term and term in note_content:
+                score += 3.8
 
         if lookup_intent:
             if lookup_intent.classification:
@@ -2776,10 +3409,13 @@ def metadata_search(
             score -= 0.15
 
         if score > 0:
-            results.append((score, record))
+            snippet = record.get("summary") or record.get("suggested_name") or record.get("original_name") or ""
+            if source_kind == NOTE_SOURCE_KIND:
+                snippet = build_note_search_snippet(note_content_raw, normalized_terms)
+            results.append((score, record, str(snippet)))
 
-    results.sort(key=lambda item: (item[0], str(item[1].get("uploaded_at") or "")), reverse=True)
-    return [manifest_search_result(record, score) for score, record in results[:limit]]
+    results.sort(key=lambda item: (item[0], str(item[1].get("updated_at") or item[1].get("uploaded_at") or "")), reverse=True)
+    return [manifest_search_result(record, score, snippet=snippet) for score, record, snippet in results[:limit]]
 
 
 def semantic_search(
@@ -2823,6 +3459,7 @@ def semantic_search(
                 pdf_path=metadata.get("pdf_path"),
                 classification=metadata.get("classification"),
                 suggested_name=metadata.get("suggested_name"),
+                source_kind=str(metadata.get("source_kind") or DOCUMENT_SOURCE_KIND),
             )
         )
     return output
@@ -2890,8 +3527,8 @@ def extract_lookup_intent_with_groq(user_message: str) -> LookupIntent:
             {
                 "role": "system",
                 "content": (
-                    "You extract document lookup intent for a private document archive. "
-                    "Return only valid JSON. Decide whether the user is asking for a specific file/document/PDF. "
+                    "You extract document or note lookup intent for a private archive. "
+                    "Return only valid JSON. Decide whether the user is asking for a specific file, document, PDF or note. "
                     "Use null for unknown singular fields and [] for missing term lists."
                 ),
             },
@@ -2971,6 +3608,10 @@ def should_use_document_context(
         "arquivos",
         "documento",
         "documentos",
+        "nota",
+        "notas",
+        "anotacao",
+        "anotacoes",
         "pdf",
         "pdfs",
         "acervo",
@@ -3076,6 +3717,8 @@ def should_use_document_context(
         "do-pdf",
         "do-documento",
         "do-arquivo",
+        "da-nota",
+        "nas-notas",
         "segundo-o",
         "com-base-no",
     )
@@ -3137,6 +3780,7 @@ def search_result_from_saved_reference(reference: dict[str, Any], *, score: floa
         metadata={
             "title": reference.get("title") or reference.get("suggested_name") or "",
             "original_name": reference.get("original_name") or "",
+            "source_kind": reference.get("source_kind") or DOCUMENT_SOURCE_KIND,
             "classification": reference.get("classification") or "",
             "document_type": reference.get("document_type") or reference.get("classification") or "",
             "domain": reference.get("domain") or "",
@@ -3144,11 +3788,14 @@ def search_result_from_saved_reference(reference: dict[str, Any], *, score: floa
             "chunk_index": reference.get("chunk_index") or "",
             "page": reference.get("page") or "",
             "aliases": json.dumps(reference.get("aliases") or [], ensure_ascii=False),
+            "author": reference.get("author") or "",
+            "updated_at": reference.get("updated_at") or "",
         },
         markdown_path=reference.get("markdown_path"),
         pdf_path=reference.get("pdf_path"),
         classification=reference.get("document_type") or reference.get("classification"),
         suggested_name=reference.get("suggested_name"),
+        source_kind=str(reference.get("source_kind") or DOCUMENT_SOURCE_KIND),
     )
 
 
@@ -3234,10 +3881,12 @@ def is_path_within(base: Path, path: Path) -> bool:
 def build_rag_context(current_user: AuthenticatedUserContext, references: list[SearchResult]) -> str:
     blocks: list[str] = []
     for index, reference in enumerate(references, start=1):
+        source_kind = str(reference.source_kind or reference.metadata.get("source_kind") or DOCUMENT_SOURCE_KIND)
         title = reference.metadata.get("title") or reference.suggested_name or reference.document_id
         original_name = reference.metadata.get("original_name") or reference.suggested_name or ""
         classification = reference.metadata.get("document_type") or reference.classification or reference.metadata.get("classification") or ""
         domain = reference.metadata.get("domain") or ""
+        author = reference.metadata.get("author") or ""
         year = reference.metadata.get("year") or ""
         score = f"{reference.score:.3f}" if isinstance(reference.score, float) else "metadata"
         markdown_path = reference.markdown_path
@@ -3249,8 +3898,10 @@ def build_rag_context(current_user: AuthenticatedUserContext, references: list[S
             "\n".join(
                 [
                     f"[Fonte {index}] {title}",
-                    f"Arquivo: {original_name}",
+                    f"Origem: {original_name}",
+                    f"Tipo de item: {'nota' if source_kind == NOTE_SOURCE_KIND else 'documento'}",
                     f"Tipo: {classification}",
+                    f"Autor: {author}" if author else "Autor: -",
                     f"Dominio: {domain}",
                     f"Ano: {year}",
                     f"Aliases: {' | '.join(aliases[:4])}" if aliases else "Aliases: -",
@@ -3310,12 +3961,12 @@ def build_chat_messages(
     searched_documents: bool,
 ) -> list[dict[str, str]]:
     system_prompt = (
-        "Your name is Nexus. You are a precise, pragmatic and careful AI assistant for a private document archive. "
-        "Each authenticated user has a fully isolated workspace with isolated documents and memory. "
-        "DeepSeek organizes incoming files, while you help reason, locate the right document and answer quickly. "
+        "Your name is Nexus. You are a precise, pragmatic and careful AI assistant for a private archive of documents and notes. "
+        "Each authenticated user has a fully isolated workspace with isolated documents, notes and memory. "
+        "DeepSeek organizes incoming files, while you help reason, locate the right document or note and answer quickly. "
         "Do not search or imply that you searched user files unless document context was supplied. "
         "For general questions, answer directly from reasoning and persistent memory. "
-        "For document questions, use only supplied context when citing documents; if context was supplied, treat it as actual file content or extracted excerpts available to you. "
+        "For archive questions, use only supplied context when citing documents or notes; if context was supplied, treat it as actual content or extracted excerpts available to you. "
         "Never say that you cannot access the file content when the context contains document excerpts or recovered markdown text. "
         "If the supplied context is insufficient, say exactly what is missing. "
         "When a document is clearly the current focus, keep answering about that same document until the user switches context. "
@@ -3342,9 +3993,9 @@ def build_chat_messages(
         messages.append({"role": item.role, "content": item.content})
 
     if searched_documents:
-        context_block = context or "Busca em documentos executada, mas nenhum documento relevante foi encontrado."
+        context_block = context or "Busca em documentos e notas executada, mas nenhum item relevante foi encontrado."
     else:
-        context_block = "Busca em documentos nao executada porque a mensagem nao pediu arquivos ou acervo."
+        context_block = "Busca em documentos e notas nao executada porque a mensagem nao pediu itens do acervo."
 
     user_prompt = f"Contexto:\n{context_block}\n\nPergunta do usuario:\n{request.message}"
     messages.append({"role": "user", "content": user_prompt})
@@ -3655,6 +4306,7 @@ def save_session_turn(
     serialized_references = [
         {
             "document_id": reference.document_id,
+            "source_kind": reference.source_kind,
             "title": reference.metadata.get("title") or reference.suggested_name,
             "original_name": reference.metadata.get("original_name") or "",
             "markdown_path": reference.markdown_path,
@@ -3663,6 +4315,8 @@ def save_session_turn(
             "classification": reference.classification,
             "document_type": reference.metadata.get("document_type") or reference.classification,
             "domain": reference.metadata.get("domain") or "",
+            "author": reference.metadata.get("author") or "",
+            "updated_at": reference.metadata.get("updated_at") or "",
             "suggested_name": reference.suggested_name,
             "chunk_id": reference.chunk_id,
             "chunk_index": reference.metadata.get("chunk_index"),

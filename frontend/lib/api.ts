@@ -30,6 +30,7 @@ export type SearchResult = {
   pdf_path?: string | null;
   classification?: string | null;
   suggested_name?: string | null;
+  source_kind?: string;
 };
 
 export type ChatTurn = {
@@ -83,6 +84,7 @@ export type AuthenticatedUserProfile = {
 
 export type DocumentRecord = {
   document_id: string;
+  source_kind?: string;
   sha256: string;
   original_name: string;
   classification: string;
@@ -138,6 +140,41 @@ export type FolderRecord = {
   path: string;
   name: string;
   created_at: string;
+};
+
+export type NoteRecord = {
+  note_id: string;
+  source_kind: "note";
+  title: string;
+  content: string;
+  tags: string[];
+  author?: string | null;
+  created_at: string;
+  updated_at: string;
+  current_version: number;
+  version_count: number;
+  summary: string;
+  markdown_path: string;
+  chunks_indexed: number;
+  size_bytes?: number | null;
+};
+
+export type NoteVersionRecord = {
+  note_id: string;
+  version: number;
+  title: string;
+  content: string;
+  tags: string[];
+  author?: string | null;
+  created_at: string;
+  updated_at: string;
+  snapshot_at: string;
+};
+
+export type NotePayload = {
+  title: string;
+  content: string;
+  tags: string[];
 };
 
 const LOCAL_API_BASE = "http://127.0.0.1:18000";
@@ -436,6 +473,68 @@ export async function listFolders(token: string): Promise<FolderRecord[]> {
     headers: authHeaders(token)
   });
   return parseJsonResponse<FolderRecord[]>(response);
+}
+
+export async function listNotes(token: string): Promise<NoteRecord[]> {
+  const response = await fetch(`${resolveApiBase()}/notes`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<NoteRecord[]>(response);
+}
+
+export async function getNote(noteId: string, token: string): Promise<NoteRecord> {
+  const response = await fetch(`${resolveApiBase()}/notes/${noteId}`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<NoteRecord>(response);
+}
+
+export async function createNote(payload: NotePayload, token: string): Promise<NoteRecord> {
+  const response = await fetch(`${resolveApiBase()}/notes`, {
+    method: "POST",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify(payload)
+  });
+  return parseJsonResponse<NoteRecord>(response);
+}
+
+export async function updateNote(
+  noteId: string,
+  payload: Partial<NotePayload>,
+  token: string
+): Promise<NoteRecord> {
+  const response = await fetch(`${resolveApiBase()}/notes/${noteId}`, {
+    method: "PATCH",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify(payload)
+  });
+  return parseJsonResponse<NoteRecord>(response);
+}
+
+export async function deleteNote(noteId: string, token: string): Promise<{ note_id: string; status: string }> {
+  const response = await fetch(`${resolveApiBase()}/notes/${noteId}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<{ note_id: string; status: string }>(response);
+}
+
+export async function listNoteVersions(noteId: string, token: string): Promise<NoteVersionRecord[]> {
+  const response = await fetch(`${resolveApiBase()}/notes/${noteId}/versions`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<NoteVersionRecord[]>(response);
+}
+
+export async function getNoteVersion(
+  noteId: string,
+  version: number,
+  token: string
+): Promise<NoteVersionRecord> {
+  const response = await fetch(`${resolveApiBase()}/notes/${noteId}/versions/${version}`, {
+    headers: authHeaders(token)
+  });
+  return parseJsonResponse<NoteVersionRecord>(response);
 }
 
 export async function createFolder(name: string, parentPath: string, token: string): Promise<FolderRecord> {
