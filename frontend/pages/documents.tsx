@@ -358,7 +358,7 @@ export default function DocumentsPage() {
                         ? "animate-pulse bg-amber-400"
                         : ""
                     }`}
-                    style={{ width: `${uploadProgress}%` }}
+                    style={{ width: `${Math.max(3, uploadProgress)}%` }}
                   />
                 </div>
                 <div className="progress-step-list pt-3">

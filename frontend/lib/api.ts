@@ -448,8 +448,8 @@ export async function uploadDocuments(
     xhr.upload.addEventListener("progress", (event) => {
       if (!event.lengthComputable || !onProgress) return;
       const uploadPct = Math.round((event.loaded / event.total) * 100);
-      // Scale 0-100 upload to 0-95 visual progress
-      onProgress(Math.min(95, Math.round(uploadPct * 0.95)));
+      // Cap at 95% while uploading
+      onProgress(Math.min(95, uploadPct));
     });
 
     // When the upload body is fully sent, lock at 95% ("server processing")
