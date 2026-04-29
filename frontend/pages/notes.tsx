@@ -375,7 +375,7 @@ export default function NotesPage() {
             </div>
           </GlassCard>
 
-          <GlassCard className="flex min-h-[34rem] flex-col gap-5">
+          <GlassCard className="flex min-h-[34rem] flex-col gap-5 xl:max-h-[calc(100dvh-12rem)]">
             <div className="space-y-4">
               <Input
                 label="Pesquisar notas"

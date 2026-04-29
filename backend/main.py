@@ -62,6 +62,8 @@ MAX_PDF_UPLOAD_BYTES = int(os.getenv("MAX_PDF_UPLOAD_BYTES", str(25 * 1024 * 102
 MAX_ZIP_UPLOAD_BYTES = int(os.getenv("MAX_ZIP_UPLOAD_BYTES", str(250 * 1024 * 1024)))
 MAX_ZIP_PDF_FILES = int(os.getenv("MAX_ZIP_PDF_FILES", "100"))
 MAX_UPLOAD_COMMENT_CHARS = int(os.getenv("MAX_UPLOAD_COMMENT_CHARS", "4000"))
+DEFAULT_STORAGE_LIMIT_BYTES = int(os.getenv("NEXUS_DEFAULT_STORAGE_LIMIT_BYTES", str(5 * 1024 * 1024 * 1024)))
+NEXUS_ADMIN_TOKEN = os.getenv("NEXUS_ADMIN_TOKEN", "").strip()
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -306,6 +308,26 @@ class AuthenticatedUserProfile(BaseModel):
     folders_path: str
     memory_dir: str
     collection_name: str
+    storage_used_bytes: int = 0
+    storage_limit_bytes: int = DEFAULT_STORAGE_LIMIT_BYTES
+
+
+class AdminUserRecord(BaseModel):
+    uid: str
+    email: str | None = None
+    display_name: str | None = None
+    provider_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    last_login_at: str
+    user_root: str
+    storage_used_bytes: int = 0
+    storage_limit_bytes: int = DEFAULT_STORAGE_LIMIT_BYTES
+    document_count: int = 0
+    note_count: int = 0
+
+
+class AdminStorageLimitRequest(BaseModel):
+    storage_limit_bytes: int = Field(ge=0)
 
 
 class FolderRecord(BaseModel):
@@ -350,6 +372,13 @@ def require_authenticated_user(authorization: str | None = Header(default=None))
     return build_user_context(decoded_token)
 
 
+def require_admin_access(x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")) -> None:
+    if not NEXUS_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="NEXUS_ADMIN_TOKEN is not configured on the backend.")
+    if not x_admin_token or x_admin_token != NEXUS_ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     return {
@@ -384,6 +413,81 @@ async def sync_authenticated_user(
 ) -> AuthenticatedUserProfile:
     profile = upsert_user_profile(current_user)
     return AuthenticatedUserProfile(**profile)
+
+
+@app.get("/admin/users", response_model=list[AdminUserRecord])
+async def admin_list_users(_: None = Depends(require_admin_access)) -> list[AdminUserRecord]:
+    users: list[AdminUserRecord] = []
+    for current_user in list_user_contexts_from_storage():
+        users.append(AdminUserRecord(**build_admin_user_record(current_user)))
+    users.sort(key=lambda item: item.storage_used_bytes, reverse=True)
+    return users
+
+
+@app.patch("/admin/users/{uid}/storage-limit", response_model=AdminUserRecord)
+async def admin_update_storage_limit(
+    uid: str,
+    request: AdminStorageLimitRequest,
+    _: None = Depends(require_admin_access),
+) -> AdminUserRecord:
+    current_user = find_user_context_by_uid(uid)
+    if current_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    profile = read_json_object(current_user.profile_path) or upsert_user_profile(current_user)
+    profile["storage_limit_bytes"] = request.storage_limit_bytes
+    current_user.profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+    return AdminUserRecord(**build_admin_user_record(current_user))
+
+
+@app.post("/admin/upload-documents")
+async def admin_upload_documents(
+    user_uid: str = Form(...),
+    files: list[UploadFile] = File(...),
+    upload_comment: str = Form(default=""),
+    _: None = Depends(require_admin_access),
+) -> dict[str, Any]:
+    current_user = find_user_context_by_uid(user_uid)
+    if current_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one PDF or ZIP file is required.")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    upload_batch_id = str(uuid.uuid4())
+    for upload in files:
+        try:
+            processed = process_uploaded_upload(
+                file=upload,
+                current_user=current_user,
+                upload_comment=upload_comment,
+                upload_batch_id=upload_batch_id,
+                persist_upload_memory=False,
+            )
+            results.extend(processed["results"])
+            errors.extend(processed["errors"])
+        except HTTPException as exc:
+            errors.append({"filename": safe_filename(upload.filename or "document.pdf"), "detail": str(exc.detail)})
+        except Exception as exc:
+            logger.exception("Unexpected admin upload failure for user=%s file=%s", current_user.uid, upload.filename)
+            errors.append({"filename": safe_filename(upload.filename or "document.pdf"), "detail": str(exc)})
+
+    if results:
+        append_upload_comment_memory(
+            current_user=current_user,
+            upload_comment=upload_comment,
+            source_name="envio admin",
+            item_count=len(results),
+            upload_batch_id=upload_batch_id,
+        )
+
+    return {
+        "results": results,
+        "errors": errors,
+        "uploaded_count": len(results),
+        "failed_count": len(errors),
+        "user": build_admin_user_record(current_user),
+    }
 
 
 @app.post("/upload-document")
@@ -527,6 +631,7 @@ def process_uploaded_pdf(
     )
 
     save_upload(file, staging_path)
+    enforce_storage_limit_for_new_file(current_user, staging_path)
     return queue_staged_pdf(
         current_user=current_user,
         document_id=document_id,
@@ -555,6 +660,7 @@ def process_uploaded_zip(
     archive_name = safe_filename(file.filename or "documents.zip")
     archive_path = current_user.incoming_dir / f"{archive_id}__{archive_name}"
     save_upload(file, archive_path)
+    enforce_storage_limit_for_new_file(current_user, archive_path)
 
     if archive_path.stat().st_size > MAX_ZIP_UPLOAD_BYTES:
         archive_path.unlink(missing_ok=True)
@@ -1602,10 +1708,110 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def directory_size_bytes(path: Path, *, exclude_paths: set[Path] | None = None) -> int:
+    if not path.exists():
+        return 0
+    excluded = {item.resolve() for item in (exclude_paths or set()) if item.exists()}
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if not item.is_file():
+                continue
+            resolved = item.resolve()
+            if resolved in excluded:
+                continue
+            total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def storage_limit_bytes_for_user(current_user: AuthenticatedUserContext) -> int:
+    profile = read_json_object(current_user.profile_path) or {}
+    raw_limit = profile.get("storage_limit_bytes")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = DEFAULT_STORAGE_LIMIT_BYTES
+    return max(0, limit)
+
+
+def storage_used_bytes_for_user(
+    current_user: AuthenticatedUserContext,
+    *,
+    exclude_paths: set[Path] | None = None,
+) -> int:
+    return directory_size_bytes(current_user.user_dir, exclude_paths=exclude_paths)
+
+
+def enforce_storage_limit_for_new_file(current_user: AuthenticatedUserContext, file_path: Path) -> None:
+    file_size = file_path.stat().st_size if file_path.exists() else 0
+    used_without_file = storage_used_bytes_for_user(current_user, exclude_paths={file_path})
+    limit = storage_limit_bytes_for_user(current_user)
+    if used_without_file + file_size <= limit:
+        return
+    file_path.unlink(missing_ok=True)
+    raise HTTPException(
+        status_code=413,
+        detail=(
+            f"Limite de armazenamento excedido. Uso atual: {format_bytes(used_without_file)}; "
+            f"arquivo: {format_bytes(file_size)}; limite: {format_bytes(limit)}."
+        ),
+    )
+
+
+def list_user_contexts_from_storage() -> list[AuthenticatedUserContext]:
+    if not USERS_DIR.exists():
+        return []
+    contexts: list[AuthenticatedUserContext] = []
+    for user_dir in USERS_DIR.iterdir():
+        if not user_dir.is_dir():
+            continue
+        context = build_user_context_from_storage(user_dir)
+        if context is not None:
+            contexts.append(context)
+    return contexts
+
+
+def find_user_context_by_uid(uid: str) -> AuthenticatedUserContext | None:
+    clean_uid = uid.strip()
+    if not clean_uid:
+        return None
+    for context in list_user_contexts_from_storage():
+        if context.uid == clean_uid:
+            return context
+    return None
+
+
+def build_admin_user_record(current_user: AuthenticatedUserContext) -> dict[str, Any]:
+    ensure_user_storage(current_user)
+    profile = read_json_object(current_user.profile_path) or upsert_user_profile(current_user)
+    records = read_manifest_records(current_user)
+    document_count = sum(1 for record in records if not is_note_record(record))
+    note_count = sum(1 for record in records if is_note_record(record))
+    return {
+        "uid": current_user.uid,
+        "email": current_user.email or profile.get("email"),
+        "display_name": current_user.display_name or profile.get("display_name"),
+        "provider_ids": current_user.provider_ids,
+        "created_at": str(profile.get("created_at") or ""),
+        "last_login_at": str(profile.get("last_login_at") or ""),
+        "user_root": str(current_user.user_dir),
+        "storage_used_bytes": storage_used_bytes_for_user(current_user),
+        "storage_limit_bytes": storage_limit_bytes_for_user(current_user),
+        "document_count": document_count,
+        "note_count": note_count,
+    }
+
+
 def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any]:
     ensure_user_storage(current_user)
     existing = read_json_object(current_user.profile_path) or {}
     timestamp = datetime.now(UTC).isoformat()
+    try:
+        storage_limit_bytes = int(existing.get("storage_limit_bytes", DEFAULT_STORAGE_LIMIT_BYTES))
+    except (TypeError, ValueError):
+        storage_limit_bytes = DEFAULT_STORAGE_LIMIT_BYTES
     profile = {
         "uid": current_user.uid,
         "email": current_user.email,
@@ -1626,6 +1832,8 @@ def upsert_user_profile(current_user: AuthenticatedUserContext) -> dict[str, Any
         "notes_dir": str(current_user.notes_dir),
         "note_versions_dir": str(current_user.note_versions_dir),
         "collection_name": current_user.collection_name,
+        "storage_used_bytes": storage_used_bytes_for_user(current_user),
+        "storage_limit_bytes": max(0, storage_limit_bytes),
     }
     current_user.profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
     return profile

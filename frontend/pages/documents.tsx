@@ -382,7 +382,7 @@ export default function DocumentsPage() {
           </form>
         </GlassCard>
 
-        <GlassCard className="lg:col-span-2 overflow-hidden flex flex-col h-full !min-h-[30rem]">
+        <GlassCard className="lg:col-span-2 overflow-hidden flex flex-col h-full !min-h-[30rem] lg:max-h-[calc(100dvh-12rem)]">
           <div className="flex items-center justify-between mb-6">
             <div>
               <p className="eyebrow text-accent-strong">Acervo</p>

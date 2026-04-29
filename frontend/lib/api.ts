@@ -90,6 +90,22 @@ export type AuthenticatedUserProfile = {
   notes_dir?: string;
   note_versions_dir?: string;
   collection_name: string;
+  storage_used_bytes: number;
+  storage_limit_bytes: number;
+};
+
+export type AdminUserRecord = {
+  uid: string;
+  email?: string | null;
+  display_name?: string | null;
+  provider_ids: string[];
+  created_at: string;
+  last_login_at: string;
+  user_root: string;
+  storage_used_bytes: number;
+  storage_limit_bytes: number;
+  document_count: number;
+  note_count: number;
 };
 
 export type DocumentRecord = {
@@ -241,6 +257,13 @@ function authHeaders(token: string, headers: HeadersInit = {}): HeadersInit {
   };
 }
 
+function adminHeaders(adminToken: string, headers: HeadersInit = {}): HeadersInit {
+  return {
+    ...headers,
+    "X-Admin-Token": adminToken,
+  };
+}
+
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const contentType = response.headers.get("content-type") || "";
@@ -267,6 +290,71 @@ export async function syncAuthenticatedUser(token: string): Promise<Authenticate
     headers: authHeaders(token)
   });
   return parseJsonResponse<AuthenticatedUserProfile>(response);
+}
+
+export async function listAdminUsers(adminToken: string): Promise<AdminUserRecord[]> {
+  const response = await fetch(`${resolveApiBase()}/admin/users`, {
+    headers: adminHeaders(adminToken)
+  });
+  return parseJsonResponse<AdminUserRecord[]>(response);
+}
+
+export async function updateAdminUserStorageLimit(
+  adminToken: string,
+  uid: string,
+  storageLimitBytes: number
+): Promise<AdminUserRecord> {
+  const response = await fetch(`${resolveApiBase()}/admin/users/${encodeURIComponent(uid)}/storage-limit`, {
+    method: "PATCH",
+    headers: adminHeaders(adminToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ storage_limit_bytes: storageLimitBytes })
+  });
+  return parseJsonResponse<AdminUserRecord>(response);
+}
+
+export async function uploadAdminDocuments(
+  adminToken: string,
+  uid: string,
+  files: File[],
+  uploadComment = "",
+  onProgress?: (progress: number) => void
+): Promise<UploadBatchResponse & { user: AdminUserRecord }> {
+  const formData = new FormData();
+  formData.append("user_uid", uid);
+  formData.append("upload_comment", uploadComment);
+  files.forEach((file) => formData.append("files", file));
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${resolveApiBase()}/admin/upload-documents`);
+    Object.entries(adminHeaders(adminToken)).forEach(([key, value]) => {
+      if (typeof value === "string") xhr.setRequestHeader(key, value);
+    });
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable || !onProgress) return;
+      onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    });
+    xhr.addEventListener("load", () => {
+      const contentType = xhr.getResponseHeader("content-type") || "";
+      const responseText = xhr.responseText || "";
+      if (xhr.status < 200 || xhr.status >= 300) {
+        try {
+          const payload = contentType.includes("application/json") ? JSON.parse(responseText) : null;
+          reject(new Error(payload?.detail || payload?.message || responseText || `Request failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(responseText || `Request failed with status ${xhr.status}`));
+        }
+        return;
+      }
+      try {
+        resolve(JSON.parse(responseText));
+      } catch {
+        reject(new Error("Resposta inválida do servidor ao enviar arquivos."));
+      }
+    });
+    xhr.addEventListener("error", () => reject(new Error("Falha de conexão durante o upload.")));
+    xhr.send(formData);
+  });
 }
 
 export async function uploadDocument(

@@ -28,7 +28,7 @@ export default function Layout({ children }: LayoutProps) {
     { label: "Chat", path: "/chat", icon: <MessageSquare size={18} /> },
   ];
 
-  if (router.pathname === "/login") {
+  if (router.pathname === "/login" || router.pathname === "/admin") {
     return <>{children}</>;
   }
 

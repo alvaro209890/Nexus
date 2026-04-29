@@ -50,6 +50,9 @@ export default function DashboardPage() {
   const displayName = authProfile?.display_name || user?.displayName || authProfile?.email?.split("@")[0] || user?.email?.split("@")[0] || "Operador";
   const displayEmail = authProfile?.email || user?.email || "--";
   const providerText = authProfile?.provider_ids?.length ? authProfile.provider_ids.map(formatProvider).join(", ") : "--";
+  const storageUsed = authProfile?.storage_used_bytes || 0;
+  const storageLimit = authProfile?.storage_limit_bytes || 0;
+  const storagePercent = storageLimit > 0 ? Math.min(100, Math.round((storageUsed / storageLimit) * 100)) : 0;
 
   const formatDocName = (name: string) => {
     let clean = name.replace(/_/g, " ").replace(/\.pdf$/i, "");
@@ -167,6 +170,21 @@ export default function DashboardPage() {
               <UserDataRow icon={<Clock size={16} />} label="Criado em" value={formatDateTime(authProfile?.created_at)} />
               <UserDataRow icon={<Clock size={16} />} label="Último login" value={formatDateTime(authProfile?.last_login_at)} />
               <UserDataRow icon={<Database size={16} />} label="Coleção vetorial" value={authProfile?.collection_name || "--"} monospace />
+              <div className="rounded-xl border border-border-soft bg-[rgba(0,0,0,0.12)] px-3 py-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-muted">
+                    <HardDrive size={16} />
+                    <p className="text-[0.68rem] font-bold uppercase tracking-[0.08em]">Armazenamento</p>
+                  </div>
+                  <span className="text-xs font-bold text-accent-strong">{storagePercent}%</span>
+                </div>
+                <div className="progress-track bg-black/20">
+                  <div className="progress-bar" style={{ width: `${storagePercent}%` }} />
+                </div>
+                <p className="mt-2 text-sm font-semibold text-primary">
+                  {formatBytes(storageUsed)} de {formatBytes(storageLimit)}
+                </p>
+              </div>
               <UserDataRow icon={<HardDrive size={16} />} label="Workspace" value={shortenPath(authProfile?.user_root)} />
               <UserDataRow icon={<HardDrive size={16} />} label="Memória" value={shortenPath(authProfile?.memory_dir)} />
             </div>
@@ -252,6 +270,14 @@ function formatDateTime(value?: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("pt-BR");
+}
+
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function shortenPath(value?: string | null): string {

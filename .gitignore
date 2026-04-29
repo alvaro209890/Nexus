@@ -5,6 +5,7 @@ frontend/.next/
 frontend/out/
 frontend/node_modules/
 .firebase/
+.run-logs/
 .codex
 .codex/
 data/chromadb/

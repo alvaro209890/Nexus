@@ -39,7 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAuthProfile(null);
         setAuthSyncing(false);
         // Only redirect to login if we are not already on the login page
-        if (router.pathname !== "/login") {
+        if (router.pathname !== "/login" && router.pathname !== "/admin") {
           void router.replace("/login");
         }
         return;

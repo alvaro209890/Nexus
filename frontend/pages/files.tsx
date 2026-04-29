@@ -224,7 +224,7 @@ export default function FilesPage() {
   }, [documents, folderMap, loading, router.isReady, router.query.document, router.query.path, selectFolder]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)] animate-fade-in -mx-4 -mt-4 px-4 pt-4 pb-4">
+    <div className="app-viewport flex flex-col animate-fade-in -mx-4 -mt-4 px-4 pt-4 pb-4">
       
       {error && (
         <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 mb-4 flex items-center gap-3">

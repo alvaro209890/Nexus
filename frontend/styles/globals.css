@@ -63,6 +63,7 @@
 
 html, body, #__next {
   min-height: 100%;
+  height: 100%;
 }
 
 html {
@@ -117,7 +118,7 @@ button:disabled {
 }
 
 .page-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -135,6 +136,7 @@ button:disabled {
   flex-direction: column;
   gap: 2rem;
   flex: 1;
+  min-height: 0;
 }
 
 .eyebrow {
@@ -172,6 +174,24 @@ button:disabled {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   background: rgba(24, 24, 27, 0.9);
+}
+
+textarea.field {
+  resize: vertical;
+  max-height: min(36rem, 62dvh);
+  overflow-y: auto;
+}
+
+.app-viewport {
+  height: calc(100dvh - 8rem);
+  max-height: calc(100dvh - 8rem);
+  min-height: 34rem;
+  overflow: hidden;
+}
+
+.contained-scroll {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .field-label {
