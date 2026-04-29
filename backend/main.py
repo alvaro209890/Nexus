@@ -177,6 +177,7 @@ class SearchResult(BaseModel):
 class DocumentRecord(BaseModel):
     document_id: str
     source_kind: str = "document"
+    file_format: str = "pdf"
     sha256: str
     original_name: str
     source_archive_name: str | None = None
@@ -559,71 +560,106 @@ def process_uploaded_zip(
         archive_path.unlink(missing_ok=True)
         raise HTTPException(status_code=413, detail=f"O ZIP excede o limite de {format_bytes(MAX_ZIP_UPLOAD_BYTES)}.")
 
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
     try:
         with zipfile.ZipFile(archive_path) as archive:
-            pdf_members = [
-                member
-                for member in archive.infolist()
-                if not member.is_dir() and safe_zip_entry_path(member.filename).lower().endswith(".pdf")
-            ]
-            if not pdf_members:
-                raise HTTPException(status_code=400, detail="O ZIP não contém PDFs processáveis.")
-            if len(pdf_members) > MAX_ZIP_PDF_FILES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"O ZIP contém {len(pdf_members)} PDFs; o limite atual é {MAX_ZIP_PDF_FILES}.",
-                )
-
-            for member in pdf_members:
-                entry_path = safe_zip_entry_path(member.filename)
-                entry_name = safe_filename(Path(entry_path).name or "document.pdf")
-                try:
-                    if member.file_size > MAX_PDF_UPLOAD_BYTES:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=f"O PDF dentro do ZIP excede {format_bytes(MAX_PDF_UPLOAD_BYTES)}.",
-                        )
-                    document_id = str(uuid.uuid4())
-                    staging_path = current_user.incoming_dir / f"{document_id}__{entry_name}"
-                    copy_zip_member_to_path(archive, member, staging_path)
-                    results.append(
-                        queue_staged_pdf(
-                            current_user=current_user,
-                            document_id=document_id,
-                            original_name=entry_name,
-                            staging_path=staging_path,
-                            upload_comment=upload_comment,
-                            source_archive_name=archive_name,
-                            zip_entry_path=entry_path,
-                            upload_batch_id=upload_batch_id,
-                        )
-                    )
-                except HTTPException as exc:
-                    errors.append({"filename": entry_path, "detail": str(exc.detail)})
-                except Exception as exc:
-                    logger.exception("ZIP member processing failed archive=%s member=%s", archive_name, entry_path)
-                    errors.append({"filename": entry_path, "detail": str(exc)})
+            corrupt_member = archive.testzip()
+            if corrupt_member is not None:
+                archive_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="O arquivo ZIP está corrompido ou inválido.")
+            archive_entries = summarize_zip_entries(archive)
     except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="O arquivo ZIP está corrompido ou inválido.") from exc
-    finally:
         archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="O arquivo ZIP está corrompido ou inválido.") from exc
 
-    if results and persist_upload_memory:
+    result = store_uploaded_archive(
+        current_user=current_user,
+        archive_id=archive_id,
+        archive_name=archive_name,
+        archive_path=archive_path,
+        upload_comment=upload_comment,
+        upload_batch_id=upload_batch_id,
+        archive_entries=archive_entries,
+    )
+
+    if persist_upload_memory:
         append_upload_comment_memory(
             current_user=current_user,
             upload_comment=upload_comment,
             source_name=archive_name,
-            item_count=len(results),
+            item_count=1,
             upload_batch_id=upload_batch_id,
         )
 
     return {
-        "results": results,
-        "errors": errors,
-        "uploaded_count": len(results),
-        "failed_count": len(errors),
+        "results": [result],
+        "errors": [],
+        "uploaded_count": 1,
+        "failed_count": 0,
+    }
+
+
+def store_uploaded_archive(
+    *,
+    current_user: AuthenticatedUserContext,
+    archive_id: str,
+    archive_name: str,
+    archive_path: Path,
+    upload_comment: str = "",
+    upload_batch_id: str | None = None,
+    archive_entries: list[str] | None = None,
+) -> dict[str, Any]:
+    file_hash = hash_file(archive_path)
+    existing_record = find_document_by_hash(current_user, file_hash)
+    if existing_record is not None:
+        archive_path.unlink(missing_ok=True)
+        logger.info(
+            "Duplicate archive upload skipped for user=%s document_id=%s sha256=%s",
+            current_user.uid,
+            archive_id,
+            file_hash,
+        )
+        return {
+            **existing_record,
+            "duplicate": True,
+            "message": "Arquivo ja armazenado para este usuario. Retornando registro existente.",
+        }
+
+    organization = organize_archive_upload(
+        archive_name=archive_name,
+        upload_comment=upload_comment,
+        archive_entries=archive_entries or [],
+    )
+    folder_parts = organization["folder_parts"]
+    target_dir = current_user.originals_dir.joinpath(*folder_parts)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored_path = ensure_unique_path(target_dir / archive_name)
+    shutil.move(str(archive_path), str(stored_path))
+
+    record = build_stored_archive_record(
+        document_id=archive_id,
+        file_hash=file_hash,
+        archive_name=archive_name,
+        archive_path=stored_path,
+        folder_path="/".join(folder_parts),
+        upload_comment=upload_comment,
+        upload_batch_id=upload_batch_id,
+        organization=organization,
+    )
+    append_manifest_record(current_user, record)
+    append_document_processing_event(
+        current_user,
+        archive_id,
+        stage="ready",
+        status="stored",
+        level="success",
+        message="Arquivo ZIP armazenado no workspace. Conteudo preservado sem extracao ou indexacao semantica.",
+        progress=100,
+        timestamp=str(record.get("processing_completed_at") or record.get("uploaded_at")),
+    )
+    return {
+        **record,
+        "duplicate": False,
+        "message": "Arquivo ZIP armazenado no acervo.",
     }
 
 
@@ -875,16 +911,18 @@ async def download_document(
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found for this user.")
 
-    pdf_path = Path(str(record.get("pdf_path") or "")).expanduser()
-    if not pdf_path.exists() or not pdf_path.is_file():
-        raise HTTPException(status_code=404, detail="Stored PDF is missing.")
+    stored_path = Path(str(record.get("pdf_path") or "")).expanduser()
+    if not stored_path.exists() or not stored_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored file is missing.")
     try:
-        pdf_path.relative_to(current_user.originals_dir)
+        stored_path.relative_to(current_user.originals_dir)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Document path is outside the user's storage.") from exc
 
-    download_name = safe_filename(str(record.get("original_name") or pdf_path.name))
-    return FileResponse(path=pdf_path, filename=download_name, media_type="application/pdf")
+    download_name = safe_filename(str(record.get("original_name") or stored_path.name))
+    suffix = stored_path.suffix.lower()
+    media_type = "application/zip" if suffix == ".zip" else "application/pdf" if suffix == ".pdf" else "application/octet-stream"
+    return FileResponse(path=stored_path, filename=download_name, media_type=media_type)
 
 
 @app.post("/documents/{document_id}/retry", response_model=DocumentRecord)
@@ -1157,6 +1195,19 @@ def safe_zip_entry_path(value: str) -> str:
     return "/".join(parts)
 
 
+def summarize_zip_entries(archive: zipfile.ZipFile, *, limit: int = 80) -> list[str]:
+    entries: list[str] = []
+    for member in archive.infolist():
+        if member.is_dir():
+            continue
+        entry_path = safe_zip_entry_path(member.filename)
+        if entry_path:
+            entries.append(entry_path)
+        if len(entries) >= limit:
+            break
+    return entries
+
+
 def copy_zip_member_to_path(archive: zipfile.ZipFile, member: zipfile.ZipInfo, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -1171,6 +1222,225 @@ def copy_zip_member_to_path(archive: zipfile.ZipFile, member: zipfile.ZipInfo, d
 
 def clean_upload_comment(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:MAX_UPLOAD_COMMENT_CHARS]
+
+
+ARCHIVE_CATEGORY_KEYWORDS: dict[str, set[str]] = {
+    "financeiro": {"financeiro", "fiscal", "nota", "nf", "boleto", "recibo", "pagamento", "imposto", "contabil"},
+    "juridico": {"juridico", "contrato", "processo", "lei", "procuracao", "termo", "acordo"},
+    "imagens": {"foto", "fotos", "imagem", "imagens", "png", "jpg", "jpeg", "webp", "psd", "design"},
+    "videos": {"video", "videos", "mp4", "mov", "filmagem", "gravacao"},
+    "codigo": {"codigo", "code", "fonte", "script", "sistema", "app", "site", "python", "javascript", "react"},
+    "dados": {"dados", "planilha", "csv", "excel", "xlsx", "banco", "dataset", "geojson", "shapefile", "shape"},
+    "documentos": {"documento", "documentos", "relatorio", "texto", "word", "docx", "pdf", "oficio", "manual"},
+    "backups": {"backup", "dump", "exportacao", "copia", "restore"},
+    "midia": {"audio", "musica", "podcast", "wav", "mp3"},
+}
+ARCHIVE_GENERIC_PROJECT_WORDS = {
+    "arquivo", "arquivos", "zip", "pasta", "pastas", "coisas", "diversos", "geral", "dados",
+    "documentos", "conteudo", "material", "materiais", "upload", "anexo", "anexos",
+}
+
+
+def organize_archive_upload(
+    *,
+    archive_name: str,
+    upload_comment: str,
+    archive_entries: list[str],
+) -> dict[str, Any]:
+    fallback = fallback_archive_organization(
+        archive_name=archive_name,
+        upload_comment=upload_comment,
+        archive_entries=archive_entries,
+    )
+    if not GROQ_API_KEY:
+        return fallback
+
+    try:
+        ai_result = analyze_archive_with_groq(
+            archive_name=archive_name,
+            upload_comment=upload_comment,
+            archive_entries=archive_entries,
+        )
+        return normalize_archive_organization(ai_result, fallback=fallback)
+    except Exception as exc:
+        logger.warning("Archive organization fallback for %s: %s", archive_name, exc)
+        return fallback
+
+
+def analyze_archive_with_groq(
+    *,
+    archive_name: str,
+    upload_comment: str,
+    archive_entries: list[str],
+) -> dict[str, Any]:
+    client = get_groq_client()
+    prompt = {
+        "task": "Choose a conservative storage folder for a ZIP in a private archive.",
+        "filename": archive_name,
+        "user_comment": clean_upload_comment(upload_comment),
+        "entry_samples": archive_entries[:60],
+        "allowed_categories": sorted(ARCHIVE_CATEGORY_KEYWORDS.keys() | {"geral"}),
+        "required_json_schema": {
+            "category": "one allowed category, or geral when uncertain",
+            "project": "explicit project/client/work name from the user comment, or null",
+            "tags": ["short searchable tags"],
+            "summary": "short Portuguese summary of why this folder was chosen",
+            "confidence": "float 0..1",
+        },
+        "rules": [
+            "Do not create many folders. The final system will allow only arquivos/category/project.",
+            "Only set project when the user explicitly names a project, client, work, site, app, course, or operation.",
+            "Do not use vague words like geral, diversos, arquivos, pasta, zip, material, or documentos as project.",
+            "Prefer category=geral when the evidence is weak.",
+            "Use entry names only as weak evidence; do not infer facts from file extensions alone.",
+        ],
+    }
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "Return only valid JSON. Be conservative with folder creation.",
+            },
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ],
+        temperature=0.1,
+        response_format={"type": "json_object"},
+    )
+    return json.loads(response.choices[0].message.content or "{}")
+
+
+def fallback_archive_organization(
+    *,
+    archive_name: str,
+    upload_comment: str,
+    archive_entries: list[str],
+) -> dict[str, Any]:
+    text = " ".join([archive_name, clean_upload_comment(upload_comment), " ".join(archive_entries[:40])])
+    tokens = set(tokenize_search_terms(text))
+    category = "geral"
+    best_score = 0
+    for candidate, keywords in ARCHIVE_CATEGORY_KEYWORDS.items():
+        score = sum(1 for keyword in keywords if safe_slug(keyword, "") in tokens)
+        if score > best_score:
+            category = candidate
+            best_score = score
+
+    if category == "geral":
+        category = infer_archive_category_from_extensions(archive_entries)
+
+    project = infer_archive_project_slug(upload_comment, archive_name, archive_entries)
+    folder_parts = compact_archive_folder_parts(category=category, project=project)
+    tags = [category, project or "", *sorted(tokens & {"zip", "backup", "contrato", "fotos", "planilha", "codigo"})]
+    return {
+        "folder_parts": folder_parts,
+        "classification": "arquivo",
+        "domain": category if category != "geral" else "arquivos",
+        "tags": dedupe_text_list(tags, limit=8),
+        "summary": f"Arquivo ZIP organizado em {'/'.join(folder_parts)} com base no comentario e nos nomes internos.",
+        "folder_confidence": 0.74 if project or best_score > 0 else 0.58,
+    }
+
+
+def normalize_archive_organization(ai_result: dict[str, Any], *, fallback: dict[str, Any]) -> dict[str, Any]:
+    allowed_categories = set(ARCHIVE_CATEGORY_KEYWORDS.keys()) | {"geral"}
+    category = safe_slug(str(ai_result.get("category") or ""), "")
+    if category not in allowed_categories:
+        category = str((fallback.get("folder_parts") or ["arquivos", "geral"])[1])
+
+    project = safe_slug(str(ai_result.get("project") or ""), "")
+    if project in ARCHIVE_GENERIC_PROJECT_WORDS or len(project) < 3:
+        project = ""
+
+    confidence = clamp_confidence(ai_result.get("confidence"), float(fallback.get("folder_confidence") or 0.58))
+    if confidence < 0.62:
+        project = ""
+        if category == "geral":
+            return fallback
+
+    folder_parts = compact_archive_folder_parts(category=category, project=project)
+    tags = dedupe_text_list([category, project, *normalize_string_list(ai_result.get("tags"))], limit=8)
+    return {
+        "folder_parts": folder_parts,
+        "classification": "arquivo",
+        "domain": category if category != "geral" else "arquivos",
+        "tags": tags,
+        "summary": str(ai_result.get("summary") or fallback.get("summary") or ""),
+        "folder_confidence": confidence,
+    }
+
+
+def compact_archive_folder_parts(*, category: str, project: str = "") -> list[str]:
+    clean_category = safe_slug(category, "geral")
+    if clean_category not in set(ARCHIVE_CATEGORY_KEYWORDS.keys()) | {"geral"}:
+        clean_category = "geral"
+    parts = ["arquivos", clean_category]
+    clean_project = safe_slug(project, "")
+    if clean_project and clean_project not in ARCHIVE_GENERIC_PROJECT_WORDS and clean_project != clean_category:
+        parts.append(clean_project[:60])
+    return parts[:3]
+
+
+def infer_archive_category_from_extensions(archive_entries: list[str]) -> str:
+    extension_groups = {
+        "imagens": {".jpg", ".jpeg", ".png", ".webp", ".gif", ".psd", ".ai"},
+        "videos": {".mp4", ".mov", ".avi", ".mkv"},
+        "codigo": {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".sql", ".sh"},
+        "dados": {".csv", ".xlsx", ".xls", ".geojson", ".shp", ".db", ".sqlite", ".parquet"},
+        "documentos": {".pdf", ".doc", ".docx", ".txt", ".md", ".odt", ".rtf"},
+        "midia": {".mp3", ".wav", ".flac", ".ogg"},
+    }
+    counts: dict[str, int] = {}
+    for entry in archive_entries:
+        suffix = Path(entry).suffix.lower()
+        for category, extensions in extension_groups.items():
+            if suffix in extensions:
+                counts[category] = counts.get(category, 0) + 1
+                break
+    if not counts:
+        return "geral"
+    category, count = max(counts.items(), key=lambda item: item[1])
+    return category if count >= max(2, len(archive_entries) // 3) else "geral"
+
+
+def infer_archive_project_slug(upload_comment: str, archive_name: str, archive_entries: list[str]) -> str:
+    comment = clean_upload_comment(upload_comment)
+    patterns = [
+        r"\b(?:projeto|cliente|obra|operacao|operação|curso|site|app|sistema)\s+([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 _.-]{2,60})",
+        r"\b(?:para|do|da|de)\s+(?:o|a)?\s*(?:projeto|cliente|obra|curso|site|app|sistema)\s+([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 _.-]{2,60})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, comment, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = cleanup_project_candidate(match.group(1))
+        if candidate:
+            return candidate
+
+    top_dirs: dict[str, int] = {}
+    for entry in archive_entries:
+        parts = sanitize_relative_folder(entry)
+        if len(parts) < 2:
+            continue
+        top = parts[0]
+        if top in ARCHIVE_GENERIC_PROJECT_WORDS:
+            continue
+        top_dirs[top] = top_dirs.get(top, 0) + 1
+    if top_dirs and archive_entries:
+        top, count = max(top_dirs.items(), key=lambda item: item[1])
+        if count / max(len(archive_entries), 1) >= 0.6:
+            return top[:60]
+
+    del archive_name
+    return ""
+
+
+def cleanup_project_candidate(value: str) -> str:
+    value = re.split(r"[,.;\n\r]|(?:\s+\b(?:com|para|sobre|contendo|que|onde)\b\s+)", value.strip(), maxsplit=1, flags=re.IGNORECASE)[0]
+    tokens = [token for token in tokenize_search_terms(value) if token not in ARCHIVE_GENERIC_PROJECT_WORDS]
+    if not tokens:
+        return ""
+    return "-".join(tokens[:4])[:60]
 
 
 def augment_markdown_with_upload_context(
@@ -1574,13 +1844,13 @@ def analyze_document_with_deepseek(markdown_text: str, original_name: str) -> di
     prompt = {
         "task": (
             "Classify and summarize this document for a private multi-user document-management and RAG system. "
-            "Prefer folder paths that help file separation by topic/project/year/type."
+            "Prefer compact folder paths that keep the archive organized without creating unnecessary folders."
         ),
         "filename": original_name,
         "required_json_schema": {
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
-            "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
+            "folder_path": "relative path with 1 to 3 stable folders; include project/client only when explicit",
             "domain": "high-level business domain like financeiro, juridico, rh, operacoes, produto, comercial, tecnologia, or geral",
             "aliases": ["alternative file names, common short labels, synonyms users might search"],
             "entities": ["important entities such as client, project, contract code, product or area"],
@@ -1610,7 +1880,8 @@ def analyze_document_with_deepseek(markdown_text: str, original_name: str) -> di
                         "role": "system",
                         "content": (
                             "Return only valid JSON. Do not include markdown fences. "
-                            "If data is unknown, use null or an empty list."
+                            "If data is unknown, use null or an empty list. "
+                            "Do not invent folder names; prefer broad stable folders over deep hierarchies."
                         ),
                     },
                     {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -1653,13 +1924,13 @@ def analyze_document_with_groq(
         "zip_entry_path": zip_entry_path,
     }
     prompt = {
-        "task": "Classify and summarize this document for a document-management RAG system.",
+        "task": "Classify and summarize this document for a document-management RAG system, using compact folders.",
         "filename": original_name,
         "upload_context": upload_context,
         "required_json_schema": {
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
-            "folder_path": "relative path with 2 to 4 useful folders, e.g. area/project/year/type",
+            "folder_path": "relative path with 1 to 3 stable folders; include project/client only when explicit",
             "domain": "high-level business domain like financeiro, juridico, rh, operacoes, produto, comercial, tecnologia, or geral",
             "aliases": ["alternative file names, common short labels, synonyms users might search"],
             "entities": ["important entities such as client, project, contract code, product or area"],
@@ -1690,7 +1961,8 @@ def analyze_document_with_groq(
                 "content": (
                     "Return only valid JSON. Do not include markdown fences. "
             "If data is unknown, use null or an empty list."
-            "Use upload_context as user-provided memory and organization guidance, but do not invent facts beyond the document and comment."
+            "Use upload_context as user-provided memory and organization guidance, but do not invent facts beyond the document and comment. "
+            "Avoid creating many folders; use broad stable folders unless the document or comment clearly names a project/client."
         ),
             },
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -1936,15 +2208,32 @@ def resolve_folder_parts(
     year: str,
 ) -> list[str]:
     requested_path = sanitize_relative_folder(str(ai_result.get("folder_path") or ""))
+    folder_confidence = clamp_confidence(ai_result.get("folder_confidence"), 0.55)
     requested_domain = requested_path[0] if len(requested_path) >= 1 else ""
     requested_project = requested_path[1] if len(requested_path) >= 2 else ""
-    resolved_domain = safe_slug(domain or requested_domain or "geral", "geral")
-    resolved_project = safe_slug(project or requested_project, "")
+    resolved_domain = safe_slug(domain if domain != "geral" else "", "")
+    if not resolved_domain and folder_confidence >= 0.72:
+        resolved_domain = safe_slug(requested_domain, "")
+    if not resolved_domain or resolved_domain in {"outro", "geral", "sem-data"}:
+        resolved_domain = "documentos"
+
+    resolved_project = safe_slug(project, "")
+    if not resolved_project and folder_confidence >= 0.82:
+        resolved_project = safe_slug(requested_project, "")
+    if resolved_project in {resolved_domain, "geral", "outro", "sem-data", "documentos"}:
+        resolved_project = ""
+
+    clean_classification = safe_slug(classification, "outro")
     parts = [resolved_domain]
-    if resolved_project and resolved_project != resolved_domain:
+    if resolved_project:
         parts.append(resolved_project)
-    parts.extend([year, classification])
-    return parts[:4]
+    if clean_classification and clean_classification != "outro" and clean_classification not in parts:
+        parts.append(clean_classification)
+    elif year and year != "sem-data" and len(parts) < 3:
+        parts.append(year)
+    if len(parts) == 1:
+        parts.append("geral")
+    return parts[:3]
 
 
 def sanitize_relative_folder(value: str) -> list[str]:
@@ -2313,6 +2602,7 @@ def build_queued_document_record(
     return {
         "document_id": document_id,
         "source_kind": DOCUMENT_SOURCE_KIND,
+        "file_format": "pdf",
         "sha256": file_hash,
         "original_name": original_name,
         "source_archive_name": source_archive_name,
@@ -2351,6 +2641,67 @@ def build_queued_document_record(
     }
 
 
+def build_stored_archive_record(
+    *,
+    document_id: str,
+    file_hash: str,
+    archive_name: str,
+    archive_path: Path,
+    folder_path: str,
+    upload_comment: str = "",
+    upload_batch_id: str | None = None,
+    organization: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    title = Path(archive_name).stem
+    organization = organization or {}
+    tags = dedupe_text_list(["zip", "arquivo", *normalize_string_list(organization.get("tags"))], limit=8)
+    summary = str(
+        organization.get("summary")
+        or "Arquivo ZIP armazenado no acervo. O conteudo foi preservado sem extracao ou indexacao semantica."
+    )
+    return {
+        "document_id": document_id,
+        "source_kind": DOCUMENT_SOURCE_KIND,
+        "file_format": "zip",
+        "sha256": file_hash,
+        "original_name": archive_name,
+        "source_archive_name": None,
+        "zip_entry_path": None,
+        "upload_batch_id": upload_batch_id,
+        "user_comment": clean_upload_comment(upload_comment),
+        "classification": str(organization.get("classification") or "arquivo"),
+        "document_type": str(organization.get("classification") or "arquivo"),
+        "domain": str(organization.get("domain") or "arquivos"),
+        "suggested_name": archive_name,
+        "title": title,
+        "author": None,
+        "date": None,
+        "year": "sem-data",
+        "technologies": [],
+        "summary": summary,
+        "folder_path": folder_path,
+        "tags": tags,
+        "aliases": dedupe_text_list([archive_name, title, "arquivo zip", *tags], limit=10),
+        "entities": [],
+        "project": None,
+        "classification_confidence": 1.0,
+        "folder_confidence": organization.get("folder_confidence", 0.72),
+        "title_confidence": 1.0,
+        "review_status": "auto_ok",
+        "processing_status": "ready",
+        "processing_progress": 100,
+        "processing_error": None,
+        "processing_started_at": now,
+        "processing_completed_at": now,
+        "pdf_path": str(archive_path),
+        "markdown_path": "",
+        "chunks_indexed": 0,
+        "uploaded_at": now,
+        "size_bytes": archive_path.stat().st_size if archive_path.exists() else None,
+    }
+
+
 def build_document_record(
     document_id: str,
     file_hash: str,
@@ -2373,6 +2724,7 @@ def build_document_record(
     return {
         "document_id": document_id,
         "source_kind": DOCUMENT_SOURCE_KIND,
+        "file_format": "pdf",
         "sha256": file_hash,
         "original_name": original_name,
         "source_archive_name": source_archive_name,
@@ -2505,6 +2857,8 @@ def read_document_processing_events(
 
 
 def documentStageDescription_for_backend(record: dict[str, Any]) -> str:
+    if str(record.get("file_format") or "").strip().lower() == "zip":
+        return "Arquivo ZIP armazenado no acervo sem indexacao semantica."
     status = str(record.get("processing_status") or "").strip().lower()
     if status == "queued":
         return "Documento aguardando worker livre para iniciar o processamento."
@@ -3331,6 +3685,11 @@ def write_folder_records(current_user: AuthenticatedUserContext, folders: list[d
 def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
     hydrated = dict(record)
     hydrated["source_kind"] = DOCUMENT_SOURCE_KIND
+    raw_format = str(hydrated.get("file_format") or "").strip().lower()
+    if raw_format not in {"pdf", "zip"}:
+        name = str(hydrated.get("original_name") or hydrated.get("pdf_path") or "").lower()
+        raw_format = "zip" if name.endswith(".zip") else "pdf"
+    hydrated["file_format"] = raw_format
     document_type = safe_slug(
         str(hydrated.get("document_type") or hydrated.get("classification") or "outro"),
         "outro",
@@ -3725,6 +4084,7 @@ def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
         "document_id": str(hydrated.get("document_id") or ""),
         "note_id": str(hydrated.get("note_id") or ""),
         "source_kind": str(hydrated.get("source_kind") or DOCUMENT_SOURCE_KIND),
+        "file_format": str(hydrated.get("file_format") or ""),
         "title": str(hydrated.get("title") or ""),
         "original_name": str(hydrated.get("original_name") or ""),
         "source_archive_name": str(hydrated.get("source_archive_name") or ""),
@@ -3823,6 +4183,8 @@ def metadata_search(
         project = normalize_search_text(str(record.get("project") or ""))
         domain = normalize_search_text(str(record.get("domain") or ""))
         folder_path = normalize_search_text(str(record.get("folder_path") or ""))
+        file_format = normalize_search_text(str(record.get("file_format") or ""))
+        user_comment = normalize_search_text(str(record.get("user_comment") or ""))
         classification = normalize_search_text(str(record.get("document_type") or record.get("classification") or ""))
         author = normalize_search_text(str(record.get("author") or ""))
         year = str(record.get("year") or "").strip()
@@ -3851,6 +4213,12 @@ def metadata_search(
                 score += 2.7
             if term and term in folder_path:
                 score += 2.2
+            if term and term in user_comment:
+                score += 2.6
+            if term and term in file_format:
+                score += 3.2
+            if file_format == "zip" and term in {"zip", "compactado", "compactados", "arquivo", "arquivos", "download", "baixar"}:
+                score += 3.4
             if term and term in entities:
                 score += 2.1
             if term and term in tags_normalized:
@@ -3885,12 +4253,29 @@ def metadata_search(
 
         if score > 0:
             snippet = record.get("summary") or record.get("suggested_name") or record.get("original_name") or ""
+            if str(record.get("file_format") or "").lower() == "zip":
+                snippet = build_archive_search_snippet(record)
             if source_kind == NOTE_SOURCE_KIND:
                 snippet = build_note_search_snippet(note_content_raw, normalized_terms)
             results.append((score, record, str(snippet)))
 
     results.sort(key=lambda item: (item[0], str(item[1].get("updated_at") or item[1].get("uploaded_at") or "")), reverse=True)
     return [manifest_search_result(record, score, snippet=snippet) for score, record, snippet in results[:limit]]
+
+
+def build_archive_search_snippet(record: dict[str, Any]) -> str:
+    parts = [
+        str(record.get("summary") or ""),
+        f"Arquivo: {record.get('original_name') or record.get('suggested_name') or ''}",
+        f"Pasta: {record.get('folder_path') or 'arquivos/geral'}",
+    ]
+    comment = clean_upload_comment(str(record.get("user_comment") or ""))
+    if comment:
+        parts.append(f"Comentario: {comment}")
+    tags = normalize_string_list(record.get("tags"))
+    if tags:
+        parts.append("Tags: " + ", ".join(tags[:6]))
+    return " | ".join(part for part in parts if part.strip())[:800]
 
 
 def semantic_search(

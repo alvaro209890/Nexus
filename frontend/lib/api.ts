@@ -1,5 +1,6 @@
 export type UploadResponse = {
   document_id: string;
+  file_format?: string;
   classification: string;
   suggested_name: string;
   metadata: Record<string, unknown>;
@@ -94,6 +95,7 @@ export type AuthenticatedUserProfile = {
 export type DocumentRecord = {
   document_id: string;
   source_kind?: string;
+  file_format?: string;
   sha256: string;
   original_name: string;
   source_archive_name?: string | null;

@@ -4,6 +4,7 @@ import {
   DocumentProcessingDetail,
   DocumentProcessingEvent,
   DocumentRecord,
+  downloadDocument,
   getDocumentProcessingDetail,
   listDocuments,
   retryDocumentProcessing,
@@ -14,7 +15,7 @@ import { Button } from "../components/ui/Button";
 import { StatusChip } from "../components/ui/StatusChip";
 import { Dialog } from "../components/ui/Dialog";
 import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
-import { FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2, RefreshCw, Eye } from "lucide-react";
+import { Archive, Download, FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2, RefreshCw, Eye } from "lucide-react";
 
 const ACTIVE_PROCESSING_STATUSES = new Set(["queued", "extracting", "classifying", "indexing"]);
 
@@ -121,10 +122,14 @@ export default function DocumentsPage() {
 
       if (result.uploaded_count > 0) {
         const duplicates = result.results.filter((item) => item.duplicate).length;
-        const queued = result.uploaded_count - duplicates;
+        const storedArchives = result.results.filter((item) => item.file_format === "zip" && !item.duplicate).length;
+        const queued = result.uploaded_count - duplicates - storedArchives;
         const messages = [];
         if (queued > 0) {
           messages.push(queued === 1 ? "1 documento entrou na fila de processamento." : `${queued} documentos entraram na fila de processamento.`);
+        }
+        if (storedArchives > 0) {
+          messages.push(storedArchives === 1 ? "1 ZIP armazenado no acervo." : `${storedArchives} ZIPs armazenados no acervo.`);
         }
         if (duplicates > 0) {
           messages.push(duplicates === 1 ? "1 duplicado reaproveitado." : `${duplicates} duplicados reaproveitados.`);
@@ -205,6 +210,16 @@ export default function DocumentsPage() {
     }
   }
 
+  async function handleDownloadStoredFile(document: DocumentRecord) {
+    setError("");
+    try {
+      const token = await getCurrentToken();
+      await downloadDocument(document.document_id, token, document.original_name || document.suggested_name);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível baixar o arquivo.");
+    }
+  }
+
   const formatDocName = (name: string) => {
     let clean = name.replace(/_/g, ' ').replace(/\.pdf$/i, '');
     clean = clean.replace(/\b\w/g, l => l.toUpperCase());
@@ -215,7 +230,7 @@ export default function DocumentsPage() {
     <div className="space-y-6 animate-fade-in">
       <header className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight">Documentos</h1>
-        <p className="text-secondary mt-2">Envie PDFs ou pacotes ZIP, acompanhe o progresso e gerencie o acervo indexado.</p>
+        <p className="text-secondary mt-2">Envie PDFs para indexação ou ZIPs para armazenamento no acervo.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -264,7 +279,7 @@ export default function DocumentsPage() {
                       : `${selectedFiles.length} arquivos prontos para envio`}
                 </p>
                 <p className="text-xs text-secondary">
-                  Formatos aceitos: PDF e ZIP com PDFs internos
+                  Formatos aceitos: PDF para indexar e ZIP para armazenar
                 </p>
               </div>
             </label>
@@ -370,7 +385,7 @@ export default function DocumentsPage() {
         <GlassCard className="lg:col-span-2 overflow-hidden flex flex-col h-full !min-h-[30rem]">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <p className="eyebrow text-accent-strong">Acervo indexado</p>
+              <p className="eyebrow text-accent-strong">Acervo</p>
               <p className="mt-1 text-sm text-secondary">Arquivos disponíveis na base do Nexus.</p>
             </div>
             <StatusChip label={`${documents.length} itens`} variant="info" />
@@ -396,7 +411,7 @@ export default function DocumentsPage() {
                         <Info size={32} className="text-muted mb-2" />
                         <p className="text-base font-semibold">Acervo vazio</p>
                         <p className="max-w-md text-sm text-secondary mx-auto">
-                          Faça o upload do seu primeiro PDF ou ZIP ao lado para habilitar a busca semântica e o RAG.
+                          Faça o upload do seu primeiro PDF ou ZIP ao lado para iniciar o acervo.
                         </p>
                       </div>
                     </td>
@@ -406,7 +421,11 @@ export default function DocumentsPage() {
                     <tr key={doc.document_id} className="group cursor-pointer" onClick={() => void openProcessingDetail(doc)}>
                       <td className="font-medium text-primary">
                         <div className="flex items-center gap-3">
-                          <FileText size={16} className="text-muted group-hover:text-accent transition-colors" />
+                          {isZipDocument(doc) ? (
+                            <Archive size={16} className="text-muted group-hover:text-accent transition-colors" />
+                          ) : (
+                            <FileText size={16} className="text-muted group-hover:text-accent transition-colors" />
+                          )}
                           <span className="truncate max-w-[200px] md:max-w-[300px]" title={doc.original_name}>
                             {formatDocName(doc.suggested_name || doc.original_name)}
                           </span>
@@ -451,7 +470,7 @@ export default function DocumentsPage() {
                             <Info size={14} />
                             Detalhes
                           </button>
-                          {String(doc.processing_status || "").toLowerCase() === "ready" && (
+                          {String(doc.processing_status || "").toLowerCase() === "ready" && isPdfDocument(doc) && (
                             <button
                               type="button"
                               className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
@@ -462,6 +481,19 @@ export default function DocumentsPage() {
                             >
                               <Eye size={14} />
                               Ver PDF
+                            </button>
+                          )}
+                          {String(doc.processing_status || "").toLowerCase() === "ready" && !isPdfDocument(doc) && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleDownloadStoredFile(doc);
+                              }}
+                            >
+                              <Download size={14} />
+                              Baixar
                             </button>
                           )}
                           {String(doc.processing_status || "").toLowerCase() === "failed" && (
@@ -500,9 +532,14 @@ export default function DocumentsPage() {
         panelClassName="!w-[min(96vw,72rem)]"
         footer={processingDetail ? (
           <>
-            {processingDetail.document.processing_status === "ready" && (
+            {processingDetail.document.processing_status === "ready" && isPdfDocument(processingDetail.document) && (
               <Button variant="secondary" type="button" onClick={() => setViewerDocument(processingDetail.document)}>
                 Visualizar PDF
+              </Button>
+            )}
+            {processingDetail.document.processing_status === "ready" && !isPdfDocument(processingDetail.document) && (
+              <Button variant="secondary" type="button" onClick={() => void handleDownloadStoredFile(processingDetail.document)}>
+                Baixar arquivo
               </Button>
             )}
             {processingDetail.can_retry && (
@@ -681,6 +718,16 @@ function validateFile(file: File): string | null {
   return null;
 }
 
+function isZipDocument(document: DocumentRecord): boolean {
+  const fileFormat = String(document.file_format || "").toLowerCase();
+  const originalName = String(document.original_name || document.suggested_name || "").toLowerCase();
+  return fileFormat === "zip" || originalName.endsWith(".zip");
+}
+
+function isPdfDocument(document: DocumentRecord): boolean {
+  return !isZipDocument(document);
+}
+
 function mapUploadError(error: unknown): string {
   if (!(error instanceof Error)) {
     return "Não foi possível enviar o documento.";
@@ -722,6 +769,9 @@ function documentProgressValue(document: DocumentRecord): number {
 }
 
 function documentStageLabel(document: DocumentRecord): string {
+  if (isZipDocument(document)) {
+    return "Armazenado";
+  }
   switch (String(document.processing_status || "").toLowerCase()) {
     case "queued":
       return "Na fila";
@@ -739,6 +789,9 @@ function documentStageLabel(document: DocumentRecord): string {
 }
 
 function documentStageDescription(document: DocumentRecord): string {
+  if (isZipDocument(document)) {
+    return "Arquivo ZIP preservado no workspace, sem extração ou indexação semântica.";
+  }
   switch (String(document.processing_status || "").toLowerCase()) {
     case "queued":
       return "Aguardando um worker livre para iniciar a leitura do documento.";
@@ -758,6 +811,9 @@ function documentStageDescription(document: DocumentRecord): string {
 }
 
 function documentStatusLabel(document: DocumentRecord): string {
+  if (isZipDocument(document)) {
+    return "Armazenado";
+  }
   switch (String(document.processing_status || "").toLowerCase()) {
     case "queued":
       return "Na fila";

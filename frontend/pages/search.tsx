@@ -9,6 +9,7 @@ import { StatusChip } from "../components/ui/StatusChip";
 import { HighlightedText } from "../components/ui/HighlightedText";
 import { Dialog } from "../components/ui/Dialog";
 import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
+import { Archive, Download, FileText, NotebookText } from "lucide-react";
 
 export default function SearchPage() {
   const { getCurrentToken } = useAuth();
@@ -47,7 +48,7 @@ export default function SearchPage() {
 
   async function handleDownload(result: SearchResult) {
     if (isNoteResult(result)) return;
-    const fallbackName = resolveOriginalName(result) || "documento.pdf";
+    const fallbackName = resolveOriginalName(result) || (isZipResult(result) ? "arquivo.zip" : "documento.pdf");
 
     setDownloadingId(result.document_id);
     setDetailError("");
@@ -68,7 +69,7 @@ export default function SearchPage() {
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Busca</h1>
-        <p className="text-slateblue text-sm mt-1.5">Encontre trechos relevantes em toda a base com consultas em linguagem natural.</p>
+        <p className="text-slateblue text-sm mt-1.5">Encontre documentos, notas e ZIPs armazenados por nome, pasta, comentário ou conteúdo indexado.</p>
       </header>
 
       <GlassCard>
@@ -85,7 +86,7 @@ export default function SearchPage() {
           </Button>
         </form>
         <p className="mt-3 text-sm text-slateblue/60">
-          Sugestoes: &ldquo;clausula de reajuste&rdquo;, &ldquo;cronograma do projeto&rdquo;, &ldquo;documentos sobre LGPD&rdquo;.
+          Sugestoes: &ldquo;zip financeiro&rdquo;, &ldquo;baixar arquivos do cliente Alfa&rdquo;, &ldquo;clausula de reajuste&rdquo;.
         </p>
       </GlassCard>
 
@@ -117,19 +118,27 @@ export default function SearchPage() {
             const resultChunk = resolveChunkLabel(res, index);
             const resultFolderPath = resolveFolderPath(res);
             const resultIsNote = isNoteResult(res);
+            const resultIsZip = isZipResult(res);
 
             return (
-              <button
+              <div
                 key={`${res.document_id}-${res.chunk_id}-${index}`}
-                type="button"
+                role="button"
+                tabIndex={0}
                 className="w-full rounded-[1.25rem] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                 onClick={() => handleOpenDetails(res)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    handleOpenDetails(res);
+                  }
+                }}
               >
                 <GlassCard className="result-card flex h-full flex-col">
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
                       <div className="file-folder-icon !h-11 !w-11">
-                        <DocumentTypeIcon classification={resultClassification} isNote={resultIsNote} />
+                        <DocumentTypeIcon classification={resultClassification} isNote={resultIsNote} isZip={resultIsZip} />
                       </div>
                       <div className="min-w-0">
                         <StatusChip label={resultLabel} variant="info" />
@@ -156,12 +165,27 @@ export default function SearchPage() {
                     &rdquo;
                   </p>
 
-                  <div className="mt-3 flex items-center justify-between border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
-                    <span>{resultIsNote ? "Nota indexada" : `Página ${resolvePageLabel(res)}`}</span>
-                    <span>Referência: #{resultChunk}</span>
+                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/40 pt-3 text-[0.6rem] font-bold uppercase text-slateblue/60">
+                    <span>{resultIsNote ? "Nota indexada" : resultIsZip ? "ZIP armazenado" : `Página ${resolvePageLabel(res)}`}</span>
+                    <div className="flex items-center gap-2">
+                      {!resultIsNote && (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[0.65rem] text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleDownload(res);
+                          }}
+                        >
+                          <Download size={12} />
+                          {resultIsZip ? "Baixar ZIP" : "Baixar"}
+                        </button>
+                      )}
+                      <span>Ref: #{resultChunk}</span>
+                    </div>
                   </div>
                 </GlassCard>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -177,7 +201,9 @@ export default function SearchPage() {
         title={selectedResult ? resolveDisplayName(selectedResult) : "Detalhes do item"}
         description={selectedResult && isNoteResult(selectedResult)
           ? "Veja os detalhes da nota encontrada e abra o item na aba Notas."
-          : "Veja os detalhes do documento encontrado, o caminho em Arquivos e faça o download do PDF."}
+          : selectedResult && isZipResult(selectedResult)
+            ? "Veja os detalhes do ZIP encontrado, sua pasta no acervo e baixe o arquivo compactado."
+            : "Veja os detalhes do documento encontrado, o caminho em Arquivos e faça o download do PDF."}
         onClose={() => {
           if (downloadingId) return;
           setSelectedResult(null);
@@ -193,15 +219,17 @@ export default function SearchPage() {
             </Button>
             {!isNoteResult(selectedResult) && (
               <>
-                <Button variant="secondary" type="button" onClick={() => setViewerResult(selectedResult)} disabled={Boolean(downloadingId)}>
-                  Visualizar PDF
-                </Button>
+                {!isZipResult(selectedResult) && (
+                  <Button variant="secondary" type="button" onClick={() => setViewerResult(selectedResult)} disabled={Boolean(downloadingId)}>
+                    Visualizar PDF
+                  </Button>
+                )}
                 <Button
                   type="button"
                   isLoading={downloadingId === selectedResult.document_id}
                   onClick={() => void handleDownload(selectedResult)}
                 >
-                  Baixar PDF
+                  {isZipResult(selectedResult) ? "Baixar ZIP" : "Baixar PDF"}
                 </Button>
               </>
             )}
@@ -218,7 +246,11 @@ export default function SearchPage() {
 
             <div className="flex items-start gap-4">
               <div className="file-folder-icon !h-14 !w-14 shrink-0">
-                <DocumentTypeIcon classification={resolveClassification(selectedResult)} isNote={isNoteResult(selectedResult)} />
+                <DocumentTypeIcon
+                  classification={resolveClassification(selectedResult)}
+                  isNote={isNoteResult(selectedResult)}
+                  isZip={isZipResult(selectedResult)}
+                />
               </div>
               <div className="min-w-0">
                 <p className="text-lg font-semibold leading-tight text-white break-words">
@@ -242,6 +274,10 @@ export default function SearchPage() {
               {isNoteResult(selectedResult) ? (
                 <DetailField label="Autor">
                   {readMetadataText(selectedResult.metadata, "author") || "--"}
+                </DetailField>
+              ) : isZipResult(selectedResult) ? (
+                <DetailField label="Tipo">
+                  ZIP armazenado
                 </DetailField>
               ) : (
                 <DetailField label="Página">
@@ -270,6 +306,12 @@ export default function SearchPage() {
               </DetailField>
             )}
 
+            {isZipResult(selectedResult) && readMetadataText(selectedResult.metadata, "user_comment") && (
+              <DetailField label="Comentário do upload">
+                {readMetadataText(selectedResult.metadata, "user_comment")}
+              </DetailField>
+            )}
+
             {isNoteResult(selectedResult) && (
               <DetailField label="Última atualização">
                 {readMetadataText(selectedResult.metadata, "updated_at") || "--"}
@@ -291,7 +333,7 @@ export default function SearchPage() {
       </Dialog>
 
       <DocumentViewerDialog
-        open={Boolean(viewerResult && !isNoteResult(viewerResult))}
+        open={Boolean(viewerResult && !isNoteResult(viewerResult) && !isZipResult(viewerResult))}
         onClose={() => setViewerResult(null)}
         documentId={viewerResult?.document_id}
         title={viewerResult ? resolveDocumentTitle(viewerResult) : "Visualizador"}
@@ -307,6 +349,12 @@ export default function SearchPage() {
 
 function isNoteResult(result: SearchResult): boolean {
   return (result.source_kind || readMetadataText(result.metadata, "source_kind")).toLowerCase() === "note";
+}
+
+function isZipResult(result: SearchResult): boolean {
+  const fileFormat = readMetadataText(result.metadata, "file_format").toLowerCase();
+  const originalName = resolveOriginalName(result).toLowerCase();
+  return fileFormat === "zip" || originalName.endsWith(".zip");
 }
 
 function readMetadataText(metadata: SearchResult["metadata"], key: string): string {
@@ -382,6 +430,7 @@ function buildAccountFilePath(folderPath: string, originalName: string): string 
 function labelForClassification(classification: string, isNote = false): string {
   if (isNote) return "Nota";
   const value = classification.trim().toLowerCase();
+  if (value.includes("arquivo")) return "Arquivo";
   if (value.includes("contrat")) return "Contrato";
   if (value.includes("polit")) return "Politica";
   if (value.includes("manual")) return "Manual";
@@ -402,46 +451,36 @@ function DetailField({ label, children }: { label: string; children: ReactNode }
   );
 }
 
-function DocumentTypeIcon({ classification, isNote = false }: { classification: string; isNote?: boolean }) {
+function DocumentTypeIcon({
+  classification,
+  isNote = false,
+  isZip = false,
+}: {
+  classification: string;
+  isNote?: boolean;
+  isZip?: boolean;
+}) {
   const value = classification.trim().toLowerCase();
 
   if (isNote) {
-    return (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 9h8M8 13h8M8 17h5" />
-      </svg>
-    );
+    return <NotebookText className="h-5 w-5" />;
+  }
+
+  if (isZip) {
+    return <Archive className="h-5 w-5" />;
   }
 
   if (value.includes("contrat")) {
-    return (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 7h8M8 11h8M8 15h5M7 3h7l5 5v12a1 1 0 01-1 1H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
-      </svg>
-    );
+    return <FileText className="h-5 w-5" />;
   }
 
   if (value.includes("polit")) {
-    return (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 6V4m0 2a6 6 0 100 12m0-12a6 6 0 110 12m0 0v2m-4-6h8" />
-      </svg>
-    );
+    return <FileText className="h-5 w-5" />;
   }
 
   if (value.includes("manual")) {
-    return (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M6 4h10a2 2 0 012 2v12a1 1 0 01-1.447.894L12 17l-4.553 1.894A1 1 0 016 18V4z" />
-      </svg>
-    );
+    return <FileText className="h-5 w-5" />;
   }
 
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M14 3v5h5M8 13h8M8 17h5" />
-    </svg>
-  );
+  return <FileText className="h-5 w-5" />;
 }
