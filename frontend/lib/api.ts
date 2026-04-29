@@ -433,6 +433,8 @@ export async function uploadDocuments(
   return new Promise<UploadBatchResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${resolveApiBase()}/upload-documents`);
+    // 5-minute timeout for large ZIPs through Cloudflare tunnel
+    xhr.timeout = 5 * 60 * 1000;
 
     const headers = authHeaders(token);
     Object.entries(headers).forEach(([key, value]) => {
@@ -441,9 +443,18 @@ export async function uploadDocuments(
       }
     });
 
+    // Map XHR upload progress to 0–95% range; the 95–100% gap represents
+    // the server-side processing time (saving, validating, analysing ZIP, etc.)
     xhr.upload.addEventListener("progress", (event) => {
       if (!event.lengthComputable || !onProgress) return;
-      onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      const uploadPct = Math.round((event.loaded / event.total) * 100);
+      // Scale 0-100 upload to 0-95 visual progress
+      onProgress(Math.min(95, Math.round(uploadPct * 0.95)));
+    });
+
+    // When the upload body is fully sent, lock at 95% ("server processing")
+    xhr.upload.addEventListener("loadend", () => {
+      onProgress?.(95);
     });
 
     xhr.addEventListener("load", () => {
@@ -477,6 +488,10 @@ export async function uploadDocuments(
 
     xhr.addEventListener("error", () => {
       reject(new Error("Falha de conexão durante o upload dos documentos."));
+    });
+
+    xhr.addEventListener("timeout", () => {
+      reject(new Error("O upload expirou após 5 minutos. Verifique a conexão e tente novamente."));
     });
 
     xhr.send(formData);

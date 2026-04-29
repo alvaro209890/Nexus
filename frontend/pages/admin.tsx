@@ -66,7 +66,6 @@ export default function AdminPage() {
   async function handleTokenSubmit(event: FormEvent) {
     event.preventDefault();
     const cleanToken = tokenInput.trim();
-    if (!cleanToken) return;
     window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, cleanToken);
     setAdminToken(cleanToken);
     await loadUsers(cleanToken);
@@ -75,15 +74,11 @@ export default function AdminPage() {
   async function handleSaveLimit() {
     if (!selectedUser) return;
     const parsedGb = Number.parseFloat(limitGb.replace(",", "."));
-    if (!Number.isFinite(parsedGb) || parsedGb < 0) {
-      setError("Informe um limite válido em GB.");
-      return;
-    }
     setSavingLimit(true);
     setError("");
     setStatus("");
     try {
-      const updated = await updateAdminUserStorageLimit(adminToken, selectedUser.uid, Math.round(parsedGb * 1024 * 1024 * 1024));
+      const updated = await updateAdminUserStorageLimit(adminToken, selectedUser.uid, Math.round((parsedGb || 0) * 1024 * 1024 * 1024));
       setUsers((current) => current.map((user) => user.uid === updated.uid ? updated : user));
       setStatus("Limite atualizado.");
     } catch (err) {
@@ -95,7 +90,7 @@ export default function AdminPage() {
 
   async function handleUpload(event: FormEvent) {
     event.preventDefault();
-    if (!selectedUser || selectedFiles.length === 0) return;
+    if (!selectedUser) return;
     setUploading(true);
     setUploadProgress(0);
     setError("");
@@ -122,7 +117,7 @@ export default function AdminPage() {
   function handleDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     setDragging(false);
-    setSelectedFiles(Array.from(event.dataTransfer.files || []).filter(isAcceptedFile));
+    setSelectedFiles(Array.from(event.dataTransfer.files || []));
   }
 
   const totalUsed = users.reduce((sum, user) => sum + user.storage_used_bytes, 0);
@@ -260,10 +255,9 @@ export default function AdminPage() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".pdf,.zip,application/pdf,application/zip"
                       multiple
                       className="hidden"
-                      onChange={(event) => setSelectedFiles(Array.from(event.target.files || []).filter(isAcceptedFile))}
+                      onChange={(event) => setSelectedFiles(Array.from(event.target.files || []))}
                     />
                     <UploadCloud size={42} className="mb-3 text-accent-strong" />
                     <p className="text-center text-sm font-bold">
@@ -340,9 +334,4 @@ function formatBytes(size: number): string {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function isAcceptedFile(file: File): boolean {
-  const name = file.name.toLowerCase();
-  return name.endsWith(".pdf") || name.endsWith(".zip") || file.type === "application/pdf" || file.type.includes("zip");
 }

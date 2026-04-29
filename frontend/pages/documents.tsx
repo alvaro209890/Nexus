@@ -125,7 +125,12 @@ export default function DocumentsPage() {
     );
     try {
       const token = await getCurrentToken();
-      const result = await uploadDocuments(selectedFiles, token, uploadComment, setUploadProgress);
+      const result = await uploadDocuments(selectedFiles, token, uploadComment, (pct) => {
+        setUploadProgress(pct);
+        if (pct >= 95 && pct < 100) {
+          setUploadStatus("Upload concluído. Processando no servidor — validando, analisando e organizando...");
+        }
+      });
 
       if (result.failed_count > 0) {
         setError(result.errors[0]?.detail || "Falha parcial no envio dos documentos.");
@@ -347,7 +352,14 @@ export default function DocumentsPage() {
                   <span className="text-accent-strong font-bold">{uploadProgress}%</span>
                 </div>
                 <div className="progress-track bg-black/20">
-                  <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
+                  <div
+                    className={`progress-bar transition-all duration-500 ${
+                      uploadProgress >= 95 && uploadProgress < 100
+                        ? "animate-pulse bg-amber-400"
+                        : ""
+                    }`}
+                    style={{ width: `${uploadProgress}%` }}
+                  />
                 </div>
                 <div className="progress-step-list pt-3">
                   <ProgressStep
@@ -357,7 +369,18 @@ export default function DocumentsPage() {
                         ? `Transferência em lote de ${selectedFiles.length} arquivos ou pacotes`
                         : "Transferência local para o workspace"
                     }
-                    state={uploadProgress >= 100 ? "done" : uploadProgress > 0 ? "active" : "idle"}
+                    state={uploadProgress >= 95 ? "done" : uploadProgress > 0 ? "active" : "idle"}
+                  />
+                  <ProgressStep
+                    label="Processando no servidor"
+                    description="Validando, analisando e armazenando no acervo"
+                    state={
+                      uploadProgress >= 100
+                        ? "done"
+                        : uploadProgress >= 95
+                          ? "active"
+                          : "idle"
+                    }
                   />
                   <ProgressStep
                     label="Fila e indexação"
