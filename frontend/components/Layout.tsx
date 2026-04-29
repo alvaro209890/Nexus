@@ -1,9 +1,10 @@
-import React, { ReactNode, useState } from "react";
+import React, { ReactNode, useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
-import { AlertCircle, LayoutDashboard, FileText, FolderTree, Search, MessageSquare, LogOut, Menu, X, User } from "lucide-react";
+import { AlertCircle, LayoutDashboard, FileText, FolderTree, Search, MessageSquare, LogOut, Menu, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface LayoutProps {
   children: ReactNode;
@@ -12,175 +13,240 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const router = useRouter();
   const { user, authProfile, logout, authSyncing, error: authError } = useAuth();
+  const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  
   const displayName = authProfile?.display_name || user?.displayName || authProfile?.email?.split("@")[0] || user?.email?.split("@")[0] || "Usuário";
   const displayEmail = authProfile?.email || user?.email || "E-mail não disponível";
   const userInitial = (displayName || displayEmail).charAt(0).toUpperCase();
   const providerLabel = formatProvider(authProfile?.provider_ids?.[0]);
-  const shortUid = authProfile?.uid ? `${authProfile.uid.slice(0, 8)}...${authProfile.uid.slice(-4)}` : "";
 
   const navItems = [
-    { label: "Início", path: "/", icon: <LayoutDashboard size={18} /> },
-    { label: "Documentos", path: "/documents", icon: <FileText size={18} /> },
-    { label: "Arquivos", path: "/files", icon: <FolderTree size={18} /> },
-    { label: "Notas", path: "/notes", icon: <FileText size={18} /> },
-    { label: "Busca", path: "/search", icon: <Search size={18} /> },
-    { label: "Chat", path: "/chat", icon: <MessageSquare size={18} /> },
+    { label: "Início", path: "/", icon: <LayoutDashboard size={20} /> },
+    { label: "Documentos", path: "/documents", icon: <FileText size={20} /> },
+    { label: "Arquivos", path: "/files", icon: <FolderTree size={20} /> },
+    { label: "Notas", path: "/notes", icon: <FileText size={20} /> },
+    { label: "Busca", path: "/search", icon: <Search size={20} /> },
+    { label: "Chat", path: "/chat", icon: <MessageSquare size={20} /> },
   ];
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [router.pathname]);
 
   if (router.pathname === "/login" || router.pathname === "/admin") {
     return <>{children}</>;
   }
 
   return (
-    <div className="page-shell">
-      <header className="nav-surface">
-        <div className="page-container flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            {/* Logo */}
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-accent">
-                <Image
-                  src="/nexus-icon.png"
-                  alt="Nexus"
-                  width={40}
-                  height={40}
-                  className="rounded-xl object-cover"
-                />
-              </div>
-              <div className="hidden md:block">
-                <h1 className="text-xl font-bold tracking-tight text-white m-0">Nexus</h1>
-              </div>
+    <div className="flex h-[100dvh] overflow-hidden bg-background text-primary selection:bg-accent/20">
+      
+      {/* Desktop Sidebar */}
+      <motion.aside 
+        initial={false}
+        animate={{ width: isSidebarCollapsed ? 80 : 256 }}
+        className="hidden md:flex flex-col border-r border-border-soft bg-surface-strong/50 backdrop-blur-xl z-30 shadow-panel transition-all duration-300"
+      >
+        <div className="flex items-center justify-between h-16 px-4 border-b border-border-soft shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent overflow-hidden">
+              <Image src="/nexus-icon.png" alt="Nexus" width={40} height={40} className="object-cover" />
             </div>
-
-            {/* Desktop Navigation */}
-            <nav className="hidden md:flex nav-list" aria-label="Navegação principal">
-              {navItems.map((item) => {
-                const isActive = router.pathname === item.path;
-                return (
-                  <Link
-                    key={item.path}
-                    href={item.path}
-                    aria-current={isActive ? "page" : undefined}
-                    className={`nav-pill ${isActive ? "nav-pill-active" : ""}`}
-                  >
-                    {item.icon}
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
-          </div>
-
-          {/* User Profile & Actions */}
-          <div className="flex items-center gap-3">
-            <div className="hidden min-w-0 items-center gap-3 rounded-full border border-border-soft bg-[var(--bg-surface-strong)] px-4 py-1.5 md:flex">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-bold uppercase text-accent">
-                {userInitial}
-              </div>
-              <div className="min-w-0 max-w-[16rem] overflow-hidden">
-                <p className="m-0 truncate text-sm font-semibold text-primary">{displayName}</p>
-                <p className="m-0 truncate text-[0.68rem] font-medium text-secondary">
-                  {displayEmail}
-                </p>
-              </div>
-              <span className="rounded-full border border-border-soft px-2 py-0.5 text-[0.62rem] font-bold uppercase tracking-[0.08em] text-accent-strong">
-                {authSyncing ? "sync" : providerLabel}
-              </span>
-            </div>
-            
-            <button 
-              onClick={logout} 
-              className="hidden md:flex ghost-button text-muted hover:text-danger hover:bg-danger/10"
-              title="Sair da conta"
-            >
-              <LogOut size={18} />
-              <span className="sr-only">Sair</span>
-            </button>
-
-            {/* Mobile Menu Toggle */}
-            <button 
-              className="md:hidden ghost-button px-2"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            >
-              {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
-            </button>
+            {!isSidebarCollapsed && (
+              <motion.h1 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="text-xl font-display font-bold tracking-tight text-white whitespace-nowrap"
+              >
+                Nexus
+              </motion.h1>
+            )}
           </div>
         </div>
 
-        {/* Mobile Navigation Dropdown */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar py-6 flex flex-col gap-2 px-3">
+          {navItems.map((item) => {
+            const isActive = router.pathname === item.path;
+            return (
+              <Link key={item.path} href={item.path} title={isSidebarCollapsed ? item.label : undefined}>
+                <div className={`flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition-all duration-200 group relative
+                  ${isActive ? "bg-accent/15 text-accent font-semibold" : "text-secondary hover:bg-white/5 hover:text-primary"}
+                `}>
+                  {isActive && (
+                    <motion.div layoutId="sidebar-active" className="absolute left-0 w-1 h-6 bg-accent rounded-r-full" />
+                  )}
+                  <span className={`${isActive ? "text-accent" : "text-muted group-hover:text-primary"}`}>{item.icon}</span>
+                  {!isSidebarCollapsed && <span className="whitespace-nowrap">{item.label}</span>}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+
+        <div className="p-3 border-t border-border-soft shrink-0 flex flex-col gap-3">
+          <button 
+            onClick={() => setSidebarCollapsed(!isSidebarCollapsed)} 
+            className="flex items-center justify-center w-full py-2 rounded-xl text-muted hover:bg-white/5 transition-colors"
+          >
+            {isSidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
+          
+          <div className="flex items-center gap-3 p-2 rounded-xl bg-bg-surface border border-border-soft overflow-hidden group relative">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/20 text-sm font-bold text-accent">
+              {userInitial}
+            </div>
+            {!isSidebarCollapsed && (
+              <div className="flex-1 min-w-0">
+                <p className="truncate text-sm font-semibold text-primary leading-tight">{displayName}</p>
+                <p className="truncate text-xs text-muted">{providerLabel}</p>
+              </div>
+            )}
+            
+            {/* Logout button popover */}
+            <div className="absolute inset-0 bg-bg-surface-strong opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+               <button 
+                 onClick={logout}
+                 className="flex items-center justify-center w-full h-full text-danger hover:bg-danger/10 transition-colors rounded-xl"
+                 title="Sair"
+               >
+                 <LogOut size={18} />
+               </button>
+            </div>
+          </div>
+        </div>
+      </motion.aside>
+
+      {/* Mobile Header */}
+      <header className="md:hidden fixed top-0 left-0 right-0 h-16 border-b border-border-soft bg-surface-strong/80 backdrop-blur-xl z-40 flex items-center justify-between px-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent overflow-hidden">
+            <Image src="/nexus-icon.png" alt="Nexus" width={32} height={32} className="object-cover" />
+          </div>
+          <h1 className="text-lg font-display font-bold tracking-tight text-white">Nexus</h1>
+        </div>
+        <button className="text-primary p-2 -mr-2" onClick={() => setMobileMenuOpen(true)}>
+          <Menu size={24} />
+        </button>
+      </header>
+
+      {/* Mobile Drawer */}
+      <AnimatePresence>
         {mobileMenuOpen && (
-          <div className="md:hidden absolute top-full left-0 right-0 bg-surface-strong border-b border-border-soft shadow-panel backdrop-blur-xl animate-slide-up">
-            <nav className="flex flex-col p-4 gap-2">
-              {navItems.map((item) => {
-                const isActive = router.pathname === item.path;
-                return (
-                  <Link
-                    key={item.path}
-                    href={item.path}
-                    className={`flex items-center gap-3 p-3 rounded-lg font-medium ${isActive ? "bg-accent-soft text-primary" : "text-secondary hover:bg-white/5"}`}
-                    onClick={() => setMobileMenuOpen(false)}
-                  >
-                    {item.icon}
-                    {item.label}
-                  </Link>
-                );
-              })}
-              <div className="h-px bg-border-soft my-2" />
-              <div className="flex items-center justify-between p-3 rounded-lg text-secondary">
-                <div className="flex min-w-0 items-center gap-3">
-                  <User size={18} className="shrink-0" />
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            <motion.div 
+              initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="md:hidden fixed top-0 right-0 bottom-0 w-[280px] bg-surface-strong border-l border-border-soft z-50 flex flex-col shadow-2xl"
+            >
+              <div className="flex items-center justify-between p-4 border-b border-border-soft">
+                <span className="font-bold text-lg">Menu</span>
+                <button onClick={() => setMobileMenuOpen(false)} className="p-2 -mr-2 text-muted hover:text-primary">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-4 space-y-1">
+                {navItems.map((item) => {
+                  const isActive = router.pathname === item.path;
+                  return (
+                    <Link key={item.path} href={item.path}>
+                      <div className={`flex items-center gap-3 p-3 rounded-xl font-medium transition-colors
+                        ${isActive ? "bg-accent/15 text-accent" : "text-secondary hover:bg-white/5"}
+                      `}>
+                        {item.icon}
+                        <span>{item.label}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+              
+              <div className="p-4 border-t border-border-soft bg-black/20">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent font-bold">
+                    {userInitial}
+                  </div>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-primary">{displayName}</p>
-                    <p className="truncate text-xs text-secondary">{displayEmail}</p>
-                    {shortUid && <p className="truncate text-[0.68rem] text-muted">UID {shortUid}</p>}
+                    <p className="truncate font-semibold text-primary">{displayName}</p>
+                    <p className="truncate text-xs text-muted">{displayEmail}</p>
                   </div>
                 </div>
                 <button 
-                  onClick={logout} 
-                  className="flex items-center gap-2 text-danger hover:bg-danger/10 px-3 py-1.5 rounded-md"
+                  onClick={logout}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl bg-danger/10 text-danger font-medium hover:bg-danger/20 transition-colors"
                 >
-                  <LogOut size={16} />
-                  Sair
+                  <LogOut size={18} /> Sair da conta
                 </button>
               </div>
-            </nav>
-          </div>
+            </motion.div>
+          </>
         )}
-      </header>
+      </AnimatePresence>
 
-      <main className="page-container page-stack relative">
-        {authError && (
-          <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm font-medium text-danger">
-            <div className="flex items-start gap-3">
-              <AlertCircle size={18} className="mt-0.5 shrink-0" />
-              <div>
-                <p className="font-bold">Dados do usuário não sincronizados</p>
-                <p className="mt-1 text-danger/90">{authError}</p>
-              </div>
-            </div>
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col h-full min-w-0 md:pt-0 pt-16 relative">
+        <div className="flex-1 overflow-y-auto custom-scrollbar relative w-full h-full">
+          <div className="w-full max-w-[90rem] mx-auto p-4 md:p-8 relative min-h-full flex flex-col">
+            {authError && (
+              <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 rounded-xl border border-danger/30 bg-danger/10 p-4 shadow-sm backdrop-blur-md">
+                <div className="flex items-start gap-3">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0 text-danger" />
+                  <div>
+                    <p className="font-bold text-danger text-sm">Problema de Sincronização</p>
+                    <p className="mt-1 text-danger/80 text-sm">{authError}</p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+            
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={router.pathname}
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.3, ease: "easeOut" }}
+                className="flex-1 flex flex-col"
+              >
+                {children}
+              </motion.div>
+            </AnimatePresence>
           </div>
-        )}
-        {children}
+        </div>
       </main>
 
       {/* Global Syncing Overlay */}
-      {authSyncing && (
-        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-md animate-fade-in">
-          <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
-            <div className="absolute inset-0 rounded-full border-4 border-white/10 border-t-accent animate-spin"></div>
-            <Image src="/nexus-icon.png" alt="" width={48} height={48} className="rounded-xl object-cover" />
-          </div>
-          <p className="eyebrow text-primary">Sincronizando ambiente...</p>
-        </div>
-      )}
+      <AnimatePresence>
+        {authSyncing && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-background/80 backdrop-blur-md"
+          >
+            <div className="relative mb-6 flex h-24 w-24 items-center justify-center">
+              <motion.div 
+                animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                className="absolute inset-0 rounded-full border-[3px] border-white/5 border-t-accent"
+              />
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-accent overflow-hidden">
+                <Image src="/nexus-icon.png" alt="" width={56} height={56} className="object-cover" />
+              </div>
+            </div>
+            <p className="font-display font-semibold tracking-wider text-sm text-primary uppercase animate-pulse">Sincronizando Sistema</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 function formatProvider(providerId?: string): string {
-  if (!providerId) return "conta";
-  if (providerId === "password") return "senha";
-  if (providerId === "google.com") return "google";
+  if (!providerId) return "Conta Local";
+  if (providerId === "password") return "E-mail";
+  if (providerId === "google.com") return "Google";
   return providerId.replace(".com", "");
 }

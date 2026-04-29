@@ -5,10 +5,10 @@ interface StatusChipProps {
 
 export function StatusChip({ label, variant = "warning" }: StatusChipProps) {
   const variantStyles = {
-    warning: "bg-amber-400/10 border-amber-300/30 text-amber-200",
-    success: "bg-emerald-400/10 border-emerald-300/30 text-emerald-200",
-    info: "bg-sky-400/10 border-sky-300/30 text-sky-200",
-    danger: "bg-rose-400/10 border-rose-300/30 text-rose-200",
+    warning: "bg-warning/10 border-warning/30 text-warning font-semibold",
+    success: "bg-success/10 border-success/30 text-success font-semibold",
+    info: "bg-accent/10 border-accent/30 text-accent font-semibold",
+    danger: "bg-danger/10 border-danger/30 text-danger font-semibold",
   };
 
   return (

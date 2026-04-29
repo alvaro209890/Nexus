@@ -1,4 +1,5 @@
 import { ReactNode, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface DialogProps {
   open: boolean;
@@ -34,33 +35,46 @@ export function Dialog({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [open, onClose]);
 
-  if (!open) return null;
-
   return (
-    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dialog-title"
-        className={`dialog-panel ${panelClassName}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="dialog-header">
-          <div>
-            <p className="eyebrow">Ação rápida</p>
-            <h2 id="dialog-title" className="dialog-title">
-              {title}
-            </h2>
-            {description && <p className="dialog-description">{description}</p>}
-          </div>
-          <button type="button" className="dialog-close" onClick={onClose} aria-label="Fechar janela">
-            <CloseIcon />
-          </button>
-        </div>
-        <div className={`dialog-content ${contentClassName}`}>{children}</div>
-        {footer && <div className="dialog-footer">{footer}</div>}
-      </div>
-    </div>
+    <AnimatePresence>
+      {open && (
+        <motion.div 
+          initial={{ opacity: 0 }} 
+          animate={{ opacity: 1 }} 
+          exit={{ opacity: 0 }} 
+          className="dialog-backdrop" 
+          role="presentation" 
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            transition={{ type: "spring", stiffness: 300, damping: 24 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dialog-title"
+            className={`dialog-panel ${panelClassName}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-header">
+              <div>
+                <p className="eyebrow">Ação rápida</p>
+                <h2 id="dialog-title" className="dialog-title">
+                  {title}
+                </h2>
+                {description && <p className="dialog-description">{description}</p>}
+              </div>
+              <button type="button" className="dialog-close" onClick={onClose} aria-label="Fechar janela">
+                <CloseIcon />
+              </button>
+            </div>
+            <div className={`dialog-content ${contentClassName}`}>{children}</div>
+            {footer && <div className="dialog-footer">{footer}</div>}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

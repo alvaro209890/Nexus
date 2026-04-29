@@ -8,28 +8,28 @@
   
   /* Premium Dark Theme */
   --bg-base: #09090b; /* Zinc 950 */
-  --bg-surface: rgba(24, 24, 27, 0.7); /* Zinc 900 translucid */
-  --bg-surface-strong: rgba(39, 39, 42, 0.9); /* Zinc 800 translucid */
-  --bg-elevated: rgba(24, 24, 27, 0.85);
+  --bg-surface: rgba(24, 24, 27, 0.65); /* Zinc 900 translucid */
+  --bg-surface-strong: rgba(39, 39, 42, 0.85); /* Zinc 800 translucid */
+  --bg-elevated: rgba(24, 24, 27, 0.9);
   
-  --border-soft: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.15);
+  --border-soft: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
   
   --text-primary: #fafafa; /* Zinc 50 */
   --text-secondary: #a1a1aa; /* Zinc 400 */
   --text-muted: #71717a; /* Zinc 500 */
   
-  /* Electric Blue / Purple Accent */
-  --accent: #6366f1; /* Indigo 500 */
-  --accent-strong: #818cf8; /* Indigo 400 */
-  --accent-soft: rgba(99, 102, 241, 0.15);
+  /* Calm / Muted Blue Accent */
+  --accent: #3b82f6; /* Blue 500 */
+  --accent-strong: #60a5fa; /* Blue 400 */
+  --accent-soft: rgba(59, 130, 246, 0.15);
   
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
   
-  --shadow-panel: 0 10px 40px -10px rgba(0, 0, 0, 0.5);
-  --shadow-lift: 0 20px 40px -20px rgba(0, 0, 0, 0.6);
+  --shadow-panel: 0 8px 32px -8px rgba(0, 0, 0, 0.5);
+  --shadow-lift: 0 16px 40px -12px rgba(0, 0, 0, 0.6), 0 0 20px 0 rgba(59, 130, 246, 0.15);
 }
 
 * {
@@ -74,8 +74,8 @@ body {
   margin: 0;
   background-color: var(--bg-base);
   background-image: 
-    radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.15), transparent 40%),
-    radial-gradient(ellipse at bottom right, rgba(168, 85, 247, 0.1), transparent 40%);
+    radial-gradient(ellipse at top left, rgba(59, 130, 246, 0.12), transparent 40%),
+    radial-gradient(ellipse at bottom right, rgba(14, 165, 233, 0.08), transparent 40%);
   background-attachment: fixed;
   color: var(--text-primary);
   font-family: var(--font-body);
@@ -220,15 +220,16 @@ textarea.field {
 }
 
 .primary-button {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: var(--accent);
   color: white;
-  border: none;
-  box-shadow: 0 4px 14px 0 rgba(99, 102, 241, 0.39);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.3);
 }
 
 .primary-button:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45);
+  background: var(--accent-strong);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
 }
 
 .secondary-button {

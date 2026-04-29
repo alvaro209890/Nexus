@@ -25,6 +25,17 @@ import {
   File,
   Trash2
 } from "lucide-react";
+import { motion, AnimatePresence, Variants } from "framer-motion";
+
+const staggerContainer: Variants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.05 } }
+};
+
+const fadeUpRow: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
+};
 
 type FolderNode = {
   path: string;
@@ -363,11 +374,11 @@ export default function FilesPage() {
                     ))}
                   </div>
                 ) : visibleFiles.length === 0 ? (
-                  <div className="empty-state border border-dashed border-border-soft rounded-2xl h-48 bg-bg-surface-strong/50">
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="empty-state border border-dashed border-border-soft rounded-2xl h-48 bg-bg-surface-strong/50">
                     <FolderX size={40} className="text-muted mb-3" />
                     <p className="text-base font-semibold">Nenhum arquivo encontrado.</p>
                     <p className="text-sm text-secondary mt-1">Navegue para outra pasta ou faça um upload.</p>
-                  </div>
+                  </motion.div>
                 ) : (
                   <div className="border border-border-soft rounded-xl overflow-hidden bg-bg-surface-strong">
                     <table className="w-full text-left text-sm">
@@ -379,9 +390,16 @@ export default function FilesPage() {
                           <th className="px-4 py-3 w-24"></th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-border-soft">
+                      <motion.tbody 
+                        variants={staggerContainer} 
+                        initial="hidden" 
+                        animate="show" 
+                        className="divide-y divide-border-soft"
+                      >
                         {visibleFiles.map((document) => (
-                          <tr 
+                          <motion.tr 
+                            variants={fadeUpRow}
+                            layout
                             key={document.document_id}
                             onClick={() => {
                                setSelectedDocId(document.document_id);
@@ -393,7 +411,7 @@ export default function FilesPage() {
                               <div className="flex items-center gap-3">
                                 <FileText size={20} className={selectedDocId === document.document_id ? "text-accent" : "text-muted group-hover:text-primary"} />
                                 <div className="min-w-0">
-                                  <p className="truncate font-medium text-primary group-hover:text-accent-strong transition-colors" title={document.original_name}>
+                                  <p className="truncate font-medium text-primary group-hover:text-accent transition-colors" title={document.original_name}>
                                     {formatDisplayFilename(document)}
                                   </p>
                                   {document.classification && (
@@ -442,9 +460,9 @@ export default function FilesPage() {
                                   </button>
                                </div>
                             </td>
-                          </tr>
+                          </motion.tr>
                         ))}
-                      </tbody>
+                      </motion.tbody>
                     </table>
                   </div>
                 )}
@@ -454,97 +472,106 @@ export default function FilesPage() {
         </GlassCard>
 
         {/* RIGHT SIDEBAR (DETAILS) */}
-        {showDetails && (
-          <GlassCard className="w-80 shrink-0 flex flex-col !p-0 overflow-hidden border-border-strong animate-fade-in relative z-20 shadow-xl">
-             <div className="border-b border-border-soft bg-bg-surface-strong/80 px-4 py-4 shrink-0 flex items-center justify-between">
-                <p className="font-bold text-primary flex items-center gap-2">
-                   <Info size={16} className="text-accent" />
-                   Ficha Técnica
-                </p>
-                <button onClick={() => setShowDetails(false)} className="text-muted hover:text-primary p-1 rounded-md hover:bg-white/5 transition-colors">
-                   <X size={16} />
-                </button>
-             </div>
-
-             <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar bg-bg-surface-strong/30">
-               {selectedDoc ? (
-                 <>
-                   <div>
-                      <div className="w-16 h-16 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 mx-auto text-accent">
-                         <File size={32} />
-                      </div>
-                      <h3 className="text-center font-bold text-primary mb-1 break-words">{formatDisplayFilename(selectedDoc)}</h3>
-                      <p className="text-center text-xs text-secondary break-words">{selectedDoc.original_name}</p>
-                   </div>
-
-                   <hr className="border-border-soft" />
-
-                   <div>
-                     <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Título Detectado</p>
-                     <p className="text-sm font-medium text-primary leading-relaxed">{selectedDoc.title || "--"}</p>
-                   </div>
-
-                   {selectedDoc.summary && (
-                     <div>
-                       <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Resumo Executivo</p>
-                       <div className="p-3 rounded-xl bg-bg-surface border border-border-soft text-xs text-secondary italic leading-relaxed">
-                         &quot;{selectedDoc.summary}&quot;
-                       </div>
-                     </div>
-                   )}
-
-                   <div className="grid grid-cols-2 gap-4">
-                     <div>
-                       <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Autor</p>
-                       <p className="text-xs font-medium text-primary truncate">{selectedDoc.author || "--"}</p>
-                     </div>
-                     <div>
-                       <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Ano Ref.</p>
-                       <p className="text-xs font-medium text-primary">{selectedDoc.year || "--"}</p>
-                     </div>
-                   </div>
-
-                   {selectedDoc.tags && selectedDoc.tags.length > 0 && (
-                     <div>
-                       <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-2">Tags Inteligentes</p>
-                       <div className="flex flex-wrap gap-1.5">
-                         {selectedDoc.tags.map((tag, i) => (
-                           <span key={i} className="text-[0.65rem] px-2 py-0.5 rounded-full bg-accent/10 border border-accent/20 text-accent font-medium">#{tag}</span>
-                         ))}
-                       </div>
-                     </div>
-                   )}
-
-                   <div className="pt-4 mt-auto space-y-3">
-                     <Button 
-                       className="w-full !rounded-xl"
-                       isLoading={downloadingId === selectedDoc.document_id}
-                       onClick={() => handleDownload(selectedDoc)}
-                     >
-                       <Download size={16} className="mr-2" />
-                       Fazer Download
-                     </Button>
-                     <Button
-                       variant="ghost"
-                       className="w-full !rounded-xl !text-danger hover:!bg-danger/10"
-                       isLoading={deletingDocId === selectedDoc.document_id}
-                       onClick={() => setIsDeleteDialogOpen(true)}
-                     >
-                       <Trash2 size={16} className="mr-2" />
-                       Excluir Arquivo
-                     </Button>
-                   </div>
-                 </>
-               ) : (
-                 <div className="flex flex-col items-center justify-center h-full text-center opacity-50">
-                   <Info size={32} className="mb-3 text-muted" />
-                   <p className="text-sm font-bold text-primary">Nenhum arquivo selecionado</p>
-                   <p className="text-xs text-secondary mt-1 max-w-[200px]">Clique em um arquivo na lista para ver seus detalhes e resumo estruturado.</p>
+        <AnimatePresence>
+          {showDetails && (
+            <motion.div 
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 320, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              className="shrink-0 overflow-hidden relative z-20"
+            >
+              <GlassCard className="w-80 h-full flex flex-col !p-0 overflow-hidden border-border-strong shadow-xl">
+                 <div className="border-b border-border-soft bg-bg-surface-strong/80 px-4 py-4 shrink-0 flex items-center justify-between">
+                    <p className="font-bold text-primary flex items-center gap-2">
+                       <Info size={16} className="text-accent" />
+                       Ficha Técnica
+                    </p>
+                    <button onClick={() => setShowDetails(false)} className="text-muted hover:text-primary p-1 rounded-md hover:bg-white/5 transition-colors">
+                       <X size={16} />
+                    </button>
                  </div>
-               )}
-             </div>
-          </GlassCard>
-        )}
+
+                 <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar bg-bg-surface-strong/30">
+                   {selectedDoc ? (
+                     <>
+                       <div>
+                          <div className="w-16 h-16 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 mx-auto text-accent">
+                             <File size={32} />
+                          </div>
+                          <h3 className="text-center font-bold text-primary mb-1 break-words">{formatDisplayFilename(selectedDoc)}</h3>
+                          <p className="text-center text-xs text-secondary break-words">{selectedDoc.original_name}</p>
+                       </div>
+
+                       <hr className="border-border-soft" />
+
+                       <div>
+                         <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Título Detectado</p>
+                         <p className="text-sm font-medium text-primary leading-relaxed">{selectedDoc.title || "--"}</p>
+                       </div>
+
+                       {selectedDoc.summary && (
+                         <div>
+                           <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Resumo Executivo</p>
+                           <div className="p-3 rounded-xl bg-bg-surface border border-border-soft text-xs text-secondary italic leading-relaxed">
+                             &quot;{selectedDoc.summary}&quot;
+                           </div>
+                         </div>
+                       )}
+
+                       <div className="grid grid-cols-2 gap-4">
+                         <div>
+                           <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Autor</p>
+                           <p className="text-xs font-medium text-primary truncate">{selectedDoc.author || "--"}</p>
+                         </div>
+                         <div>
+                           <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-1">Ano Ref.</p>
+                           <p className="text-xs font-medium text-primary">{selectedDoc.year || "--"}</p>
+                         </div>
+                       </div>
+
+                       {selectedDoc.tags && selectedDoc.tags.length > 0 && (
+                         <div>
+                           <p className="text-[0.65rem] font-bold uppercase tracking-wider text-muted mb-2">Tags Inteligentes</p>
+                           <div className="flex flex-wrap gap-1.5">
+                             {selectedDoc.tags.map((tag, i) => (
+                               <span key={i} className="text-[0.65rem] px-2 py-0.5 rounded-full bg-accent/10 border border-accent/20 text-accent font-medium">#{tag}</span>
+                             ))}
+                           </div>
+                         </div>
+                       )}
+
+                       <div className="pt-4 mt-auto space-y-3">
+                         <Button 
+                           className="w-full !rounded-xl"
+                           isLoading={downloadingId === selectedDoc.document_id}
+                           onClick={() => handleDownload(selectedDoc)}
+                         >
+                           <Download size={16} className="mr-2" />
+                           Fazer Download
+                         </Button>
+                         <Button
+                           variant="ghost"
+                           className="w-full !rounded-xl !text-danger hover:!bg-danger/10"
+                           isLoading={deletingDocId === selectedDoc.document_id}
+                           onClick={() => setIsDeleteDialogOpen(true)}
+                         >
+                           <Trash2 size={16} className="mr-2" />
+                           Excluir Arquivo
+                         </Button>
+                       </div>
+                     </>
+                   ) : (
+                     <div className="flex flex-col items-center justify-center h-full text-center opacity-50">
+                       <Info size={32} className="mb-3 text-muted" />
+                       <p className="text-sm font-bold text-primary">Nenhum arquivo selecionado</p>
+                       <p className="text-xs text-secondary mt-1 max-w-[200px]">Clique em um arquivo na lista para ver seus detalhes e resumo estruturado.</p>
+                     </div>
+                   )}
+                 </div>
+              </GlassCard>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <Dialog

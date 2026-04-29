@@ -16,6 +16,17 @@ import { StatusChip } from "../components/ui/StatusChip";
 import { Dialog } from "../components/ui/Dialog";
 import { DocumentViewerDialog } from "../components/DocumentViewerDialog";
 import { Archive, Download, FileText, UploadCloud, AlertCircle, FileCheck2, Loader2, Info, CheckCircle2, RefreshCw, Eye } from "lucide-react";
+import { motion, Variants } from "framer-motion";
+
+const staggerContainer: Variants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.05 } }
+};
+
+const fadeUpRow: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
+};
 
 const ACTIVE_PROCESSING_STATUSES = new Set(["queued", "extracting", "classifying", "indexing"]);
 
@@ -403,7 +414,12 @@ export default function DocumentsPage() {
                   <th className="rounded-tr-lg w-44">Ações</th>
                 </tr>
               </thead>
-              <tbody>
+              <motion.tbody 
+                variants={staggerContainer} 
+                initial="hidden" 
+                animate="show"
+                className="divide-y divide-border-soft"
+              >
                 {documents.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 border-none">
@@ -418,21 +434,27 @@ export default function DocumentsPage() {
                   </tr>
                 ) : (
                   documents.map((doc) => (
-                    <tr key={doc.document_id} className="group cursor-pointer" onClick={() => void openProcessingDetail(doc)}>
-                      <td className="font-medium text-primary">
+                    <motion.tr 
+                      variants={fadeUpRow}
+                      layout
+                      key={doc.document_id} 
+                      className="group cursor-pointer hover:bg-white/5 transition-colors" 
+                      onClick={() => void openProcessingDetail(doc)}
+                    >
+                      <td className="font-medium text-primary px-4 py-3">
                         <div className="flex items-center gap-3">
                           {isZipDocument(doc) ? (
                             <Archive size={16} className="text-muted group-hover:text-accent transition-colors" />
                           ) : (
                             <FileText size={16} className="text-muted group-hover:text-accent transition-colors" />
                           )}
-                          <span className="truncate max-w-[200px] md:max-w-[300px]" title={doc.original_name}>
+                          <span className="truncate max-w-[200px] md:max-w-[300px] group-hover:text-accent transition-colors" title={doc.original_name}>
                             {formatDocName(doc.suggested_name || doc.original_name)}
                           </span>
                         </div>
                       </td>
-                      <td className="text-sm text-secondary">{new Date(doc.uploaded_at).toLocaleDateString()}</td>
-                      <td className="min-w-[14rem]">
+                      <td className="text-sm text-secondary px-4 py-3">{new Date(doc.uploaded_at).toLocaleDateString()}</td>
+                      <td className="min-w-[14rem] px-4 py-3">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between gap-3 text-xs">
                             <span className="font-semibold uppercase tracking-[0.14em] text-secondary">
@@ -440,8 +462,13 @@ export default function DocumentsPage() {
                             </span>
                             <span className="font-mono text-muted">{documentProgressValue(doc)}%</span>
                           </div>
-                          <div className="progress-track h-2 bg-black/20">
-                            <div className="progress-bar" style={{ width: `${documentProgressValue(doc)}%` }} />
+                          <div className="progress-track h-2 bg-black/20 rounded-full overflow-hidden">
+                            <motion.div 
+                               initial={{ width: 0 }}
+                               animate={{ width: `${documentProgressValue(doc)}%` }}
+                               transition={{ duration: 1 }}
+                               className="progress-bar bg-accent h-full" 
+                            />
                           </div>
                           {doc.processing_error ? (
                             <p className="text-xs text-danger line-clamp-2">{doc.processing_error}</p>
@@ -450,18 +477,18 @@ export default function DocumentsPage() {
                           )}
                         </div>
                       </td>
-                      <td className="text-sm text-muted font-mono">{doc.chunks_indexed}</td>
-                      <td>
+                      <td className="text-sm text-muted font-mono px-4 py-3">{doc.chunks_indexed}</td>
+                      <td className="px-4 py-3">
                         <StatusChip
                           label={documentStatusLabel(doc)}
                           variant={documentStatusVariant(doc)}
                         />
                       </td>
-                      <td>
-                        <div className="flex items-center gap-2">
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                            className="inline-flex items-center gap-1 rounded-lg border border-border-soft px-2.5 py-1.5 text-xs font-semibold text-secondary transition-colors hover:border-accent hover:text-accent hover:bg-accent/10"
                             onClick={(event) => {
                               event.stopPropagation();
                               void openProcessingDetail(doc);
@@ -473,7 +500,7 @@ export default function DocumentsPage() {
                           {String(doc.processing_status || "").toLowerCase() === "ready" && isPdfDocument(doc) && (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                              className="inline-flex items-center gap-1 rounded-lg border border-border-soft px-2.5 py-1.5 text-xs font-semibold text-secondary transition-colors hover:border-accent hover:text-accent hover:bg-accent/10"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setViewerDocument(doc);
@@ -486,7 +513,7 @@ export default function DocumentsPage() {
                           {String(doc.processing_status || "").toLowerCase() === "ready" && !isPdfDocument(doc) && (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slateblue/80 transition-colors hover:border-accent/30 hover:text-white"
+                              className="inline-flex items-center gap-1 rounded-lg border border-border-soft px-2.5 py-1.5 text-xs font-semibold text-secondary transition-colors hover:border-accent hover:text-accent hover:bg-accent/10"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 void handleDownloadStoredFile(doc);
@@ -511,10 +538,10 @@ export default function DocumentsPage() {
                           )}
                         </div>
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))
                 )}
-              </tbody>
+              </motion.tbody>
             </table>
           </div>
         </GlassCard>
