@@ -18,7 +18,7 @@ export default function AdminPage() {
   const [selectedUid, setSelectedUid] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadComment, setUploadComment] = useState("");
-  const [limitGb, setLimitGb] = useState("5");
+  const [limitGb, setLimitGb] = useState("20");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [loading, setLoading] = useState(false);
   const [savingLimit, setSavingLimit] = useState(false);

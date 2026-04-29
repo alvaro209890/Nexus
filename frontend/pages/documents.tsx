@@ -251,7 +251,7 @@ export default function DocumentsPage() {
               <p className="eyebrow mb-1 text-accent-strong">Novo documento</p>
               <h2 className="text-xl font-bold">Enviar documentos</h2>
             </div>
-            <StatusChip label="PDF 25 MB / ZIP 250 MB" variant="info" />
+            <StatusChip label="PDF 100 MB / ZIP 2 GB" variant="info" />
           </div>
 
           <form onSubmit={handleUpload} className="space-y-4">
@@ -734,12 +734,12 @@ function validateFile(file: File): string | null {
     return "Envie arquivos em formato PDF ou ZIP.";
   }
 
-  if (isPdf && file.size > 25 * 1024 * 1024) {
-    return "O PDF excede o limite de 25 MB.";
+  if (isPdf && file.size > 100 * 1024 * 1024) {
+    return "O PDF excede o limite de 100 MB.";
   }
 
-  if (isZip && file.size > 250 * 1024 * 1024) {
-    return "O ZIP excede o limite de 250 MB.";
+  if (isZip && file.size > 2 * 1024 * 1024 * 1024) {
+    return "O ZIP excede o limite de 2 GB.";
   }
 
   return null;
