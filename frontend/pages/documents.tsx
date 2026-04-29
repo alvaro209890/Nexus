@@ -22,6 +22,7 @@ export default function DocumentsPage() {
   const { user, getCurrentToken, authProfile } = useAuth();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploadComment, setUploadComment] = useState("");
   const [uploadStatus, setUploadStatus] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
@@ -112,7 +113,7 @@ export default function DocumentsPage() {
     );
     try {
       const token = await getCurrentToken();
-      const result = await uploadDocuments(selectedFiles, token, setUploadProgress);
+      const result = await uploadDocuments(selectedFiles, token, uploadComment, setUploadProgress);
 
       if (result.failed_count > 0) {
         setError(result.errors[0]?.detail || "Falha parcial no envio dos documentos.");
@@ -137,6 +138,7 @@ export default function DocumentsPage() {
       }
 
       setSelectedFiles([]);
+      setUploadComment("");
       setUploadProgress(100);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -213,7 +215,7 @@ export default function DocumentsPage() {
     <div className="space-y-6 animate-fade-in">
       <header className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight">Documentos</h1>
-        <p className="text-secondary mt-2">Envie PDFs, acompanhe o progresso e gerencie o acervo indexado.</p>
+        <p className="text-secondary mt-2">Envie PDFs ou pacotes ZIP, acompanhe o progresso e gerencie o acervo indexado.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -221,9 +223,9 @@ export default function DocumentsPage() {
           <div className="flex items-start justify-between gap-3 mb-6">
             <div>
               <p className="eyebrow mb-1 text-accent-strong">Novo documento</p>
-              <h2 className="text-xl font-bold">Enviar PDF</h2>
+              <h2 className="text-xl font-bold">Enviar documentos</h2>
             </div>
-            <StatusChip label="Até 25 MB" variant="info" />
+            <StatusChip label="PDF 25 MB / ZIP 250 MB" variant="info" />
           </div>
 
           <form onSubmit={handleUpload} className="space-y-4">
@@ -240,7 +242,7 @@ export default function DocumentsPage() {
                 ref={fileInputRef}
                 type="file" 
                 className="hidden" 
-                accept=".pdf" 
+                accept=".pdf,.zip,application/pdf,application/zip"
                 multiple
                 disabled={isBusy}
                 onChange={(event) => {
@@ -256,16 +258,31 @@ export default function DocumentsPage() {
                 
                 <p className="text-sm font-bold text-primary mb-1">
                   {selectedFiles.length === 0
-                    ? "Arraste PDFs ou clique para buscar"
+                    ? "Arraste PDFs ou ZIPs ou clique para buscar"
                     : selectedFiles.length === 1
                       ? selectedFiles[0].name
                       : `${selectedFiles.length} arquivos prontos para envio`}
                 </p>
                 <p className="text-xs text-secondary">
-                  Formatos aceitos: PDF
+                  Formatos aceitos: PDF e ZIP com PDFs internos
                 </p>
               </div>
             </label>
+
+            <div className="space-y-1.5">
+              <label className="field-label">Comentário para a IA</label>
+              <textarea
+                className="field min-h-[7rem] resize-y"
+                maxLength={4000}
+                placeholder="Opcional: explique o projeto, cliente, finalidade, prioridade ou regra de organização. Esse contexto será salvo como memória e usado na classificação."
+                value={uploadComment}
+                disabled={isBusy}
+                onChange={(event) => setUploadComment(event.target.value)}
+              />
+              <p className="text-xs text-secondary">
+                O comentário acompanha todos os arquivos deste envio e fica disponível para busca, chat e organização automática.
+              </p>
+            </div>
 
             {selectedFiles.length > 0 && (
               <div className="rounded-xl border border-border-soft bg-bg-surface-strong p-3 text-sm animate-slide-up">
@@ -311,7 +328,7 @@ export default function DocumentsPage() {
                     label="Upload seguro"
                     description={
                       selectedFiles.length > 1
-                        ? `Transferência em lote de ${selectedFiles.length} PDFs`
+                        ? `Transferência em lote de ${selectedFiles.length} arquivos ou pacotes`
                         : "Transferência local para o workspace"
                     }
                     state={uploadProgress >= 100 ? "done" : uploadProgress > 0 ? "active" : "idle"}
@@ -379,7 +396,7 @@ export default function DocumentsPage() {
                         <Info size={32} className="text-muted mb-2" />
                         <p className="text-base font-semibold">Acervo vazio</p>
                         <p className="max-w-md text-sm text-secondary mx-auto">
-                          Faça o upload do seu primeiro PDF ao lado para habilitar a busca semântica e o RAG.
+                          Faça o upload do seu primeiro PDF ou ZIP ao lado para habilitar a busca semântica e o RAG.
                         </p>
                       </div>
                     </td>
@@ -529,6 +546,15 @@ export default function DocumentsPage() {
               <div className="space-y-3 rounded-2xl border border-white/10 bg-[rgba(20,25,33,0.72)] p-4">
                 <p className="text-sm font-bold text-white">Resumo técnico</p>
                 <MetadataLine label="Arquivo" value={processingDetail.document.original_name} />
+                {processingDetail.document.source_archive_name && (
+                  <MetadataLine label="ZIP origem" value={processingDetail.document.source_archive_name} />
+                )}
+                {processingDetail.document.zip_entry_path && (
+                  <MetadataLine label="Caminho no ZIP" value={processingDetail.document.zip_entry_path} />
+                )}
+                {processingDetail.document.user_comment && (
+                  <MetadataLine label="Comentário IA" value={processingDetail.document.user_comment} />
+                )}
                 <MetadataLine label="Sugestão" value={processingDetail.document.suggested_name} />
                 <MetadataLine label="Caminho" value={processingDetail.document.folder_path || "Meu Disco"} />
                 <MetadataLine label="Inicio" value={formatTimestamp(processingDetail.document.processing_started_at)} />
@@ -636,12 +662,20 @@ function ProcessingEventItem({ event }: { event: DocumentProcessingEvent }) {
 }
 
 function validateFile(file: File): string | null {
-  if (file.type && file.type !== "application/pdf") {
-    return "Envie um arquivo em formato PDF.";
+  const name = file.name.toLowerCase();
+  const isPdf = name.endsWith(".pdf") || file.type === "application/pdf";
+  const isZip = name.endsWith(".zip") || ["application/zip", "application/x-zip-compressed", "multipart/x-zip"].includes(file.type);
+
+  if (!isPdf && !isZip) {
+    return "Envie arquivos em formato PDF ou ZIP.";
   }
 
-  if (file.size > 25 * 1024 * 1024) {
-    return "O arquivo excede o limite de 25 MB.";
+  if (isPdf && file.size > 25 * 1024 * 1024) {
+    return "O PDF excede o limite de 25 MB.";
+  }
+
+  if (isZip && file.size > 250 * 1024 * 1024) {
+    return "O ZIP excede o limite de 250 MB.";
   }
 
   return null;
@@ -659,7 +693,11 @@ function mapUploadError(error: unknown): string {
   }
 
   if (message.includes("413") || message.includes("too large")) {
-    return "O arquivo é muito grande (acima do limite do servidor).";
+    return "O arquivo é muito grande para o limite configurado no servidor.";
+  }
+
+  if (error.message) {
+    return error.message;
   }
 
   return "Ocorreu um erro ao processar o upload.";
@@ -703,9 +741,9 @@ function documentStageLabel(document: DocumentRecord): string {
 function documentStageDescription(document: DocumentRecord): string {
   switch (String(document.processing_status || "").toLowerCase()) {
     case "queued":
-      return "Aguardando um worker livre para iniciar a leitura do PDF.";
+      return "Aguardando um worker livre para iniciar a leitura do documento.";
     case "extracting":
-      return "Convertendo o PDF em texto pesquisável.";
+      return "Convertendo o documento em texto pesquisável.";
     case "classifying":
       return "Inferindo tipo, domínio, título e pasta de destino.";
     case "indexing":

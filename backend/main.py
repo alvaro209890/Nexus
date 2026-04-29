@@ -9,6 +9,7 @@ import shutil
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -57,6 +58,10 @@ CHAT_MEMORY_TURNS = int(os.getenv("CHAT_MEMORY_TURNS", "20"))
 PDF_EXTRACT_TIMEOUT_SECONDS = int(os.getenv("PDF_EXTRACT_TIMEOUT_SECONDS", "180"))
 PDF_PYPDF_MIN_CHARS = int(os.getenv("PDF_PYPDF_MIN_CHARS", "80"))
 SEARCH_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TIMEOUT_SECONDS", "8"))
+MAX_PDF_UPLOAD_BYTES = int(os.getenv("MAX_PDF_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_ZIP_UPLOAD_BYTES = int(os.getenv("MAX_ZIP_UPLOAD_BYTES", str(250 * 1024 * 1024)))
+MAX_ZIP_PDF_FILES = int(os.getenv("MAX_ZIP_PDF_FILES", "100"))
+MAX_UPLOAD_COMMENT_CHARS = int(os.getenv("MAX_UPLOAD_COMMENT_CHARS", "4000"))
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -174,6 +179,10 @@ class DocumentRecord(BaseModel):
     source_kind: str = "document"
     sha256: str
     original_name: str
+    source_archive_name: str | None = None
+    zip_entry_path: str | None = None
+    upload_batch_id: str | None = None
+    user_comment: str = ""
     classification: str
     document_type: str | None = None
     domain: str | None = None
@@ -262,6 +271,21 @@ class NoteVersionRecord(BaseModel):
     created_at: str
     updated_at: str
     snapshot_at: str
+
+
+class NoteAssistRequest(BaseModel):
+    raw_input: str = Field(min_length=1, max_length=20000)
+    current_title: str | None = Field(default=None, max_length=160)
+    current_content: str | None = Field(default=None, max_length=20000)
+    current_tags: list[str] = Field(default_factory=list)
+    mode: str = Field(default="create", pattern="^(create|refine)$")
+
+
+class NoteAssistResponse(BaseModel):
+    title: str
+    content: str
+    tags: list[str] = Field(default_factory=list)
+    summary: str = ""
 
 
 class AuthenticatedUserProfile(BaseModel):
@@ -364,24 +388,43 @@ async def sync_authenticated_user(
 @app.post("/upload-document")
 async def upload_document(
     file: UploadFile = File(...),
+    upload_comment: str = Form(default=""),
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> dict[str, Any]:
-    return process_uploaded_pdf(file=file, current_user=current_user)
+    processed = process_uploaded_upload(
+        file=file,
+        current_user=current_user,
+        upload_comment=upload_comment,
+        upload_batch_id=str(uuid.uuid4()),
+    )
+    if processed["failed_count"] == 0 and processed["uploaded_count"] == 1:
+        return processed["results"][0]
+    return processed
 
 
 @app.post("/upload-documents")
 async def upload_documents(
     files: list[UploadFile] = File(...),
+    upload_comment: str = Form(default=""),
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> dict[str, Any]:
     if not files:
-        raise HTTPException(status_code=400, detail="At least one PDF file is required.")
+        raise HTTPException(status_code=400, detail="At least one PDF or ZIP file is required.")
 
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    upload_batch_id = str(uuid.uuid4())
     for upload in files:
         try:
-            results.append(process_uploaded_pdf(file=upload, current_user=current_user))
+            processed = process_uploaded_upload(
+                file=upload,
+                current_user=current_user,
+                upload_comment=upload_comment,
+                upload_batch_id=upload_batch_id,
+                persist_upload_memory=False,
+            )
+            results.extend(processed["results"])
+            errors.extend(processed["errors"])
         except HTTPException as exc:
             errors.append(
                 {
@@ -398,6 +441,15 @@ async def upload_documents(
                 }
             )
 
+    if results:
+        append_upload_comment_memory(
+            current_user=current_user,
+            upload_comment=upload_comment,
+            source_name="envio em lote",
+            item_count=len(results),
+            upload_batch_id=upload_batch_id,
+        )
+
     return {
         "results": results,
         "errors": errors,
@@ -406,10 +458,56 @@ async def upload_documents(
     }
 
 
+def process_uploaded_upload(
+    *,
+    file: UploadFile,
+    current_user: AuthenticatedUserContext,
+    upload_comment: str = "",
+    upload_batch_id: str | None = None,
+    persist_upload_memory: bool = True,
+) -> dict[str, Any]:
+    if is_pdf_upload(file):
+        result = process_uploaded_pdf(
+            file=file,
+            current_user=current_user,
+            upload_comment=upload_comment,
+            upload_batch_id=upload_batch_id,
+        )
+        if persist_upload_memory:
+            append_upload_comment_memory(
+                current_user=current_user,
+                upload_comment=upload_comment,
+                source_name=str(result.get("original_name") or file.filename or "document.pdf"),
+                item_count=1,
+                upload_batch_id=upload_batch_id,
+            )
+        return {
+            "results": [result],
+            "errors": [],
+            "uploaded_count": 1,
+            "failed_count": 0,
+        }
+
+    if is_zip_upload(file):
+        return process_uploaded_zip(
+            file=file,
+            current_user=current_user,
+            upload_comment=upload_comment,
+            upload_batch_id=upload_batch_id,
+            persist_upload_memory=persist_upload_memory,
+        )
+
+    raise HTTPException(status_code=400, detail="Only PDF and ZIP files are supported.")
+
+
 def process_uploaded_pdf(
     *,
     file: UploadFile,
     current_user: AuthenticatedUserContext,
+    upload_comment: str = "",
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+    upload_batch_id: str | None = None,
 ) -> dict[str, Any]:
     if not is_pdf_upload(file):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
@@ -428,6 +526,122 @@ def process_uploaded_pdf(
     )
 
     save_upload(file, staging_path)
+    return queue_staged_pdf(
+        current_user=current_user,
+        document_id=document_id,
+        original_name=original_name,
+        staging_path=staging_path,
+        upload_comment=upload_comment,
+        source_archive_name=source_archive_name,
+        zip_entry_path=zip_entry_path,
+        upload_batch_id=upload_batch_id,
+    )
+
+
+def process_uploaded_zip(
+    *,
+    file: UploadFile,
+    current_user: AuthenticatedUserContext,
+    upload_comment: str = "",
+    upload_batch_id: str | None = None,
+    persist_upload_memory: bool = True,
+) -> dict[str, Any]:
+    if not is_zip_upload(file):
+        raise HTTPException(status_code=400, detail="Only ZIP files are supported.")
+
+    ensure_user_storage(current_user)
+    archive_id = str(uuid.uuid4())
+    archive_name = safe_filename(file.filename or "documents.zip")
+    archive_path = current_user.incoming_dir / f"{archive_id}__{archive_name}"
+    save_upload(file, archive_path)
+
+    if archive_path.stat().st_size > MAX_ZIP_UPLOAD_BYTES:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=f"O ZIP excede o limite de {format_bytes(MAX_ZIP_UPLOAD_BYTES)}.")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            pdf_members = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir() and safe_zip_entry_path(member.filename).lower().endswith(".pdf")
+            ]
+            if not pdf_members:
+                raise HTTPException(status_code=400, detail="O ZIP não contém PDFs processáveis.")
+            if len(pdf_members) > MAX_ZIP_PDF_FILES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"O ZIP contém {len(pdf_members)} PDFs; o limite atual é {MAX_ZIP_PDF_FILES}.",
+                )
+
+            for member in pdf_members:
+                entry_path = safe_zip_entry_path(member.filename)
+                entry_name = safe_filename(Path(entry_path).name or "document.pdf")
+                try:
+                    if member.file_size > MAX_PDF_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"O PDF dentro do ZIP excede {format_bytes(MAX_PDF_UPLOAD_BYTES)}.",
+                        )
+                    document_id = str(uuid.uuid4())
+                    staging_path = current_user.incoming_dir / f"{document_id}__{entry_name}"
+                    copy_zip_member_to_path(archive, member, staging_path)
+                    results.append(
+                        queue_staged_pdf(
+                            current_user=current_user,
+                            document_id=document_id,
+                            original_name=entry_name,
+                            staging_path=staging_path,
+                            upload_comment=upload_comment,
+                            source_archive_name=archive_name,
+                            zip_entry_path=entry_path,
+                            upload_batch_id=upload_batch_id,
+                        )
+                    )
+                except HTTPException as exc:
+                    errors.append({"filename": entry_path, "detail": str(exc.detail)})
+                except Exception as exc:
+                    logger.exception("ZIP member processing failed archive=%s member=%s", archive_name, entry_path)
+                    errors.append({"filename": entry_path, "detail": str(exc)})
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="O arquivo ZIP está corrompido ou inválido.") from exc
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    if results and persist_upload_memory:
+        append_upload_comment_memory(
+            current_user=current_user,
+            upload_comment=upload_comment,
+            source_name=archive_name,
+            item_count=len(results),
+            upload_batch_id=upload_batch_id,
+        )
+
+    return {
+        "results": results,
+        "errors": errors,
+        "uploaded_count": len(results),
+        "failed_count": len(errors),
+    }
+
+
+def queue_staged_pdf(
+    *,
+    current_user: AuthenticatedUserContext,
+    document_id: str,
+    original_name: str,
+    staging_path: Path,
+    upload_comment: str = "",
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+    upload_batch_id: str | None = None,
+) -> dict[str, Any]:
+    if staging_path.stat().st_size > MAX_PDF_UPLOAD_BYTES:
+        staging_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=f"O PDF excede o limite de {format_bytes(MAX_PDF_UPLOAD_BYTES)}.")
+
     file_hash = hash_file(staging_path)
 
     existing_record = find_document_by_hash(current_user, file_hash)
@@ -450,6 +664,10 @@ def process_uploaded_pdf(
         file_hash=file_hash,
         original_name=original_name,
         staging_path=staging_path,
+        upload_comment=upload_comment,
+        source_archive_name=source_archive_name,
+        zip_entry_path=zip_entry_path,
+        upload_batch_id=upload_batch_id,
     )
     append_manifest_record(current_user, queued_record)
     append_document_processing_event(
@@ -540,6 +758,20 @@ async def create_note_endpoint(
     current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
 ) -> NoteRecord:
     return NoteRecord(**create_note(current_user, request))
+
+
+@app.post("/notes/assist", response_model=NoteAssistResponse)
+async def assist_note_endpoint(
+    request: NoteAssistRequest,
+    current_user: AuthenticatedUserContext = Depends(require_authenticated_user),
+) -> NoteAssistResponse:
+    del current_user
+    try:
+        suggestion = assist_note_with_groq(request)
+    except Exception as exc:
+        logger.warning("Note assist failed, using fallback strategy: %s", exc)
+        suggestion = fallback_note_assist(request)
+    return NoteAssistResponse(**suggestion)
 
 
 @app.patch("/notes/{note_id}", response_model=NoteRecord)
@@ -769,7 +1001,14 @@ async def chat(
         )
 
     context = build_rag_context(current_user, references)
-    messages = build_chat_messages(request, context, persistent_history, should_search_documents)
+    global_memory_summary = build_global_memory_summary(load_global_memory(current_user))
+    messages = build_chat_messages(
+        request,
+        context,
+        persistent_history,
+        should_search_documents,
+        global_memory_summary=global_memory_summary,
+    )
 
     client = get_groq_client()
     response = client.chat.completions.create(
@@ -887,12 +1126,80 @@ def is_pdf_upload(file: UploadFile) -> bool:
     return filename.endswith(".pdf") or content_type == "application/pdf"
 
 
+def is_zip_upload(file: UploadFile) -> bool:
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    return filename.endswith(".zip") or content_type in {
+        "application/zip",
+        "application/x-zip-compressed",
+        "multipart/x-zip",
+    }
+
+
 def save_upload(file: UploadFile, destination: Path) -> None:
     try:
         with destination.open("wb") as output:
             shutil.copyfileobj(file.file, output)
     finally:
         file.file.close()
+
+
+def safe_zip_entry_path(value: str) -> str:
+    parts: list[str] = []
+    for raw_part in value.replace("\\", "/").split("/"):
+        if raw_part in {"", ".", ".."}:
+            continue
+        clean_part = safe_filename(raw_part)
+        if clean_part and clean_part not in {"document.pdf", "documents.zip"}:
+            parts.append(clean_part)
+        elif raw_part.lower().endswith(".pdf"):
+            parts.append(clean_part)
+    return "/".join(parts)
+
+
+def copy_zip_member_to_path(archive: zipfile.ZipFile, member: zipfile.ZipInfo, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    with archive.open(member, "r") as source, destination.open("wb") as output:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            copied += len(chunk)
+            if copied > MAX_PDF_UPLOAD_BYTES:
+                destination.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"O PDF dentro do ZIP excede {format_bytes(MAX_PDF_UPLOAD_BYTES)}.")
+            output.write(chunk)
+
+
+def clean_upload_comment(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:MAX_UPLOAD_COMMENT_CHARS]
+
+
+def augment_markdown_with_upload_context(
+    markdown_text: str,
+    *,
+    upload_comment: str = "",
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+) -> str:
+    clean_comment = clean_upload_comment(upload_comment)
+    context_lines: list[str] = []
+    if clean_comment:
+        context_lines.append(f"Comentario do usuario para a IA: {clean_comment}")
+    if source_archive_name:
+        context_lines.append(f"Arquivo ZIP de origem: {source_archive_name}")
+    if zip_entry_path:
+        context_lines.append(f"Caminho original dentro do ZIP: {zip_entry_path}")
+    if not context_lines:
+        return markdown_text
+    context_block = "## Contexto do upload para IA\n\n" + "\n".join(f"- {line}" for line in context_lines)
+    return f"{context_block}\n\n---\n\n{markdown_text}"
+
+
+def format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def hash_file(path: Path) -> str:
@@ -1329,13 +1636,26 @@ def analyze_document_with_deepseek(markdown_text: str, original_name: str) -> di
     return fallback
 
 
-def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[str, Any]:
+def analyze_document_with_groq(
+    markdown_text: str,
+    original_name: str,
+    *,
+    upload_comment: str = "",
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+) -> dict[str, Any]:
     if not GROQ_API_KEY:
         return fallback_document_analysis(markdown_text, original_name)
 
+    upload_context = {
+        "user_comment": clean_upload_comment(upload_comment),
+        "source_archive_name": source_archive_name,
+        "zip_entry_path": zip_entry_path,
+    }
     prompt = {
         "task": "Classify and summarize this document for a document-management RAG system.",
         "filename": original_name,
+        "upload_context": upload_context,
         "required_json_schema": {
             "classification": "manual | lei | contrato | artigo | nota_tecnica | outro",
             "suggested_name": "[AAAA] Tipo - Titulo.md",
@@ -1369,8 +1689,9 @@ def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[s
                 "role": "system",
                 "content": (
                     "Return only valid JSON. Do not include markdown fences. "
-                    "If data is unknown, use null or an empty list."
-                ),
+            "If data is unknown, use null or an empty list."
+            "Use upload_context as user-provided memory and organization guidance, but do not invent facts beyond the document and comment."
+        ),
             },
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
         ],
@@ -1379,6 +1700,115 @@ def analyze_document_with_groq(markdown_text: str, original_name: str) -> dict[s
     )
     raw = response.choices[0].message.content or "{}"
     return normalize_ai_result(json.loads(raw), original_name)
+
+
+NOTE_ASSIST_STOP_WORDS = {
+    "de", "da", "do", "das", "dos", "para", "com", "sem", "uma", "um", "uns", "umas",
+    "que", "por", "sobre", "entre", "nos", "nas", "como", "mais", "menos", "muito",
+    "muita", "muitas", "muitos", "e", "ou", "a", "o", "as", "os", "em", "na", "no",
+    "se", "ao", "aos", "às", "ser", "foi", "são", "era", "isso", "essa", "esse",
+    "tambem", "também", "ja", "já", "tudo", "todos", "todas", "cada", "pela", "pelo",
+}
+
+
+def guess_note_tags(text: str, *, limit: int = 5) -> list[str]:
+    counts: dict[str, int] = {}
+    for token in re.findall(r"[A-Za-zÀ-ÿ0-9_-]{4,}", text.lower()):
+        if token in NOTE_ASSIST_STOP_WORDS:
+            continue
+        counts[token] = counts.get(token, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [token for token, _ in ordered[:limit]]
+
+
+def fallback_note_assist(request: NoteAssistRequest) -> dict[str, Any]:
+    raw_input = re.sub(r"\s+", " ", request.raw_input).strip()
+    current_content = (request.current_content or "").strip()
+    merged = current_content if request.mode == "refine" and current_content else request.raw_input.strip()
+    title = (request.current_title or "").strip()
+    if not title:
+        title = first_heading(merged) or raw_input[:72].strip() or "Nova nota"
+    title = re.sub(r"\s+", " ", title).strip()[:160]
+    tags = normalize_note_tags(request.current_tags or guess_note_tags(merged))
+    summary = note_summary(merged)
+    content = merged
+    if request.mode == "create" and not content.lstrip().startswith("#"):
+        bullets = [
+            item.strip(" -")
+            for item in re.split(r"(?:\n+|[.;])", request.raw_input)
+            if item.strip()
+        ][:6]
+        if bullets:
+            content = "# " + title + "\n\n## Pontos principais\n" + "\n".join(f"- {item}" for item in bullets)
+        else:
+            content = "# " + title + "\n\n" + request.raw_input.strip()
+    return {
+        "title": title or "Nova nota",
+        "content": content.strip(),
+        "tags": tags,
+        "summary": summary,
+    }
+
+
+def assist_note_with_groq(request: NoteAssistRequest) -> dict[str, Any]:
+    if not GROQ_API_KEY:
+        return fallback_note_assist(request)
+
+    client = get_groq_client()
+    prompt = {
+        "task": (
+            "Transform rough user input into a clean, searchable private knowledge-base note. "
+            "Return only valid JSON."
+        ),
+        "mode": request.mode,
+        "raw_input": request.raw_input[:16000],
+        "current_note": {
+            "title": request.current_title,
+            "content": request.current_content[:12000] if request.current_content else None,
+            "tags": normalize_note_tags(request.current_tags),
+        },
+        "required_json_schema": {
+            "title": "concise note title in Portuguese",
+            "content": "markdown note ready to save",
+            "tags": ["short searchable tags"],
+            "summary": "short summary in Portuguese",
+        },
+        "rules": [
+            "Keep the meaning from the user's input.",
+            "Use Markdown headings and bullets when they improve clarity.",
+            "Do not invent factual details that are not supported by the input.",
+            "Prefer concise, searchable tags.",
+            "Answer in Portuguese.",
+        ],
+    }
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You generate high-quality private notes for a document and knowledge archive. "
+                    "Return only valid JSON with no markdown fences."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+    raw = response.choices[0].message.content or "{}"
+    parsed = json.loads(raw)
+    title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()[:160]
+    content = str(parsed.get("content") or "").strip()
+    if not title or not content:
+        return fallback_note_assist(request)
+    return {
+        "title": title,
+        "content": content,
+        "tags": normalize_note_tags(parsed.get("tags")),
+        "summary": str(parsed.get("summary") or note_summary(content)),
+    }
 
 
 def normalize_ai_result(parsed: dict[str, Any], original_name: str) -> dict[str, Any]:
@@ -1872,14 +2302,23 @@ def build_queued_document_record(
     file_hash: str,
     original_name: str,
     staging_path: Path,
+    upload_comment: str = "",
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+    upload_batch_id: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     title = Path(original_name).stem
+    clean_comment = clean_upload_comment(upload_comment)
     return {
         "document_id": document_id,
         "source_kind": DOCUMENT_SOURCE_KIND,
         "sha256": file_hash,
         "original_name": original_name,
+        "source_archive_name": source_archive_name,
+        "zip_entry_path": zip_entry_path,
+        "upload_batch_id": upload_batch_id,
+        "user_comment": clean_comment,
         "classification": "outro",
         "document_type": "outro",
         "domain": "geral",
@@ -1921,6 +2360,10 @@ def build_document_record(
     pdf_path: Path,
     markdown_path: Path,
     chunks_indexed: int,
+    source_archive_name: str | None = None,
+    zip_entry_path: str | None = None,
+    upload_batch_id: str | None = None,
+    user_comment: str = "",
 ) -> dict[str, Any]:
     metadata = ai_result.get("metadata", {})
     technologies = metadata.get("technologies") if isinstance(metadata, dict) else []
@@ -1932,6 +2375,10 @@ def build_document_record(
         "source_kind": DOCUMENT_SOURCE_KIND,
         "sha256": file_hash,
         "original_name": original_name,
+        "source_archive_name": source_archive_name,
+        "zip_entry_path": zip_entry_path,
+        "upload_batch_id": upload_batch_id,
+        "user_comment": clean_upload_comment(user_comment),
         "classification": file_plan["classification"],
         "document_type": file_plan["document_type"],
         "domain": file_plan["domain"],
@@ -2198,6 +2645,10 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
 
     original_name = safe_filename(str(record.get("original_name") or "document.pdf"))
     file_hash = str(record.get("sha256") or "")
+    upload_comment = clean_upload_comment(str(record.get("user_comment") or ""))
+    zip_entry_path = str(record.get("zip_entry_path") or "").strip() or None
+    source_archive_name = str(record.get("source_archive_name") or "").strip() or None
+    upload_batch_id = str(record.get("upload_batch_id") or "").strip() or None
     resumed_paths = find_resumable_document_artifacts(current_user, record)
 
     if resumed_paths is not None:
@@ -2229,10 +2680,16 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
         if not source_pdf_path.exists() or not source_pdf_path.is_file():
             raise RuntimeError(f"Queued document source is missing: {source_pdf_path}")
 
-        markdown_text = extract_pdf_markdown(source_pdf_path)
+        extracted_markdown_text = extract_pdf_markdown(source_pdf_path)
         ensure_document_job_not_cancelled(current_user.uid, document_id)
-        if not markdown_text.strip():
+        if not extracted_markdown_text.strip():
             raise RuntimeError("The uploaded PDF did not produce readable text.")
+        markdown_text = augment_markdown_with_upload_context(
+            extracted_markdown_text,
+            upload_comment=upload_comment,
+            source_archive_name=source_archive_name,
+            zip_entry_path=zip_entry_path,
+        )
 
         update_manifest_record(
             current_user,
@@ -2253,7 +2710,13 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
         )
 
         try:
-            ai_result = analyze_document_with_groq(markdown_text, original_name)
+            ai_result = analyze_document_with_groq(
+                markdown_text,
+                original_name,
+                upload_comment=upload_comment,
+                source_archive_name=source_archive_name,
+                zip_entry_path=zip_entry_path,
+            )
         except Exception as exc:
             logger.warning("AI classification fallback for document_id=%s: %s", document_id, exc)
             ai_result = fallback_document_analysis(markdown_text, original_name)
@@ -2369,6 +2832,10 @@ def process_document_job(current_user: AuthenticatedUserContext, document_id: st
         pdf_path=pdf_path,
         markdown_path=markdown_path,
         chunks_indexed=len(chunks),
+        source_archive_name=source_archive_name,
+        zip_entry_path=zip_entry_path,
+        upload_batch_id=upload_batch_id,
+        user_comment=upload_comment,
     )
     final_record["uploaded_at"] = str(record.get("uploaded_at") or final_record["uploaded_at"])
     final_record["processing_started_at"] = started_at
@@ -2870,6 +3337,10 @@ def hydrate_document_record(record: dict[str, Any]) -> dict[str, Any]:
     )
     hydrated["classification"] = document_type
     hydrated["document_type"] = document_type
+    hydrated["source_archive_name"] = str(hydrated.get("source_archive_name") or "").strip() or None
+    hydrated["zip_entry_path"] = str(hydrated.get("zip_entry_path") or "").strip() or None
+    hydrated["upload_batch_id"] = str(hydrated.get("upload_batch_id") or "").strip() or None
+    hydrated["user_comment"] = clean_upload_comment(str(hydrated.get("user_comment") or ""))
 
     technologies = normalize_string_list(hydrated.get("technologies"))
     tags = normalize_string_list(hydrated.get("tags"))
@@ -3256,6 +3727,10 @@ def record_metadata_payload(record: dict[str, Any]) -> dict[str, Any]:
         "source_kind": str(hydrated.get("source_kind") or DOCUMENT_SOURCE_KIND),
         "title": str(hydrated.get("title") or ""),
         "original_name": str(hydrated.get("original_name") or ""),
+        "source_archive_name": str(hydrated.get("source_archive_name") or ""),
+        "zip_entry_path": str(hydrated.get("zip_entry_path") or ""),
+        "upload_batch_id": str(hydrated.get("upload_batch_id") or ""),
+        "user_comment": str(hydrated.get("user_comment") or ""),
         "suggested_name": str(hydrated.get("suggested_name") or ""),
         "classification": str(hydrated.get("classification") or ""),
         "document_type": str(hydrated.get("document_type") or ""),
@@ -3888,6 +4363,8 @@ def build_rag_context(current_user: AuthenticatedUserContext, references: list[S
         domain = reference.metadata.get("domain") or ""
         author = reference.metadata.get("author") or ""
         year = reference.metadata.get("year") or ""
+        user_comment = reference.metadata.get("user_comment") or ""
+        zip_entry_path = reference.metadata.get("zip_entry_path") or ""
         score = f"{reference.score:.3f}" if isinstance(reference.score, float) else "metadata"
         markdown_path = reference.markdown_path
         source_text = reference.snippet
@@ -3904,6 +4381,8 @@ def build_rag_context(current_user: AuthenticatedUserContext, references: list[S
                     f"Autor: {author}" if author else "Autor: -",
                     f"Dominio: {domain}",
                     f"Ano: {year}",
+                    f"Comentario do usuario: {user_comment}" if user_comment else "Comentario do usuario: -",
+                    f"Caminho ZIP: {zip_entry_path}" if zip_entry_path else "Caminho ZIP: -",
                     f"Aliases: {' | '.join(aliases[:4])}" if aliases else "Aliases: -",
                     f"Score: {score}",
                     f"Trecho relevante:\n{source_text[:4000]}",
@@ -3959,6 +4438,8 @@ def build_chat_messages(
     context: str,
     persistent_history: list[dict[str, Any]],
     searched_documents: bool,
+    *,
+    global_memory_summary: str = "",
 ) -> list[dict[str, str]]:
     system_prompt = (
         "Your name is Nexus. You are a precise, pragmatic and careful AI assistant for a private archive of documents and notes. "
@@ -3984,6 +4465,9 @@ def build_chat_messages(
     memory_summary = build_memory_summary(persistent_history)
     if memory_summary:
         messages.append({"role": "system", "content": f"Persistent session memory:\n{memory_summary}"})
+
+    if global_memory_summary:
+        messages.append({"role": "system", "content": f"Persistent global user memory:\n{global_memory_summary}"})
 
     focus_document = get_current_focus_document(persistent_history)
     if focus_document:
@@ -4020,6 +4504,76 @@ def legacy_session_memory_path(current_user: AuthenticatedUserContext, session_i
 
 def session_memory_path(current_user: AuthenticatedUserContext, session_id: str) -> Path:
     return chat_sessions_data_dir(current_user) / f"{session_id}.jsonl"
+
+
+def global_memory_path(current_user: AuthenticatedUserContext) -> Path:
+    return current_user.memory_dir / "global.jsonl"
+
+
+def append_global_memory(current_user: AuthenticatedUserContext, content: str, metadata: dict[str, Any] | None = None) -> None:
+    clean_content = re.sub(r"\s+", " ", content).strip()
+    if not clean_content:
+        return
+    ensure_user_storage(current_user)
+    payload = {
+        "memory_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "content": clean_content[:MAX_UPLOAD_COMMENT_CHARS],
+        "metadata": metadata or {},
+    }
+    with global_memory_path(current_user).open("a", encoding="utf-8") as output:
+        output.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def load_global_memory(current_user: AuthenticatedUserContext, *, limit: int = 20) -> list[dict[str, Any]]:
+    path = global_memory_path(current_user)
+    if not path.exists():
+        return []
+    memories: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as input_file:
+        for line in input_file:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and str(payload.get("content") or "").strip():
+                memories.append(payload)
+    return memories[-limit:]
+
+
+def build_global_memory_summary(memories: list[dict[str, Any]]) -> str:
+    snippets: list[str] = []
+    for item in memories[-12:]:
+        timestamp = str(item.get("timestamp") or "")
+        content = str(item.get("content") or "").strip()
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source = str(metadata.get("source_name") or metadata.get("kind") or "memoria")
+        if content:
+            snippets.append(f"- {timestamp[:10]} [{source}]: {content[:700]}")
+    return "\n".join(snippets)
+
+
+def append_upload_comment_memory(
+    *,
+    current_user: AuthenticatedUserContext,
+    upload_comment: str,
+    source_name: str,
+    item_count: int,
+    upload_batch_id: str | None,
+) -> None:
+    clean_comment = clean_upload_comment(upload_comment)
+    if not clean_comment:
+        return
+    append_global_memory(
+        current_user,
+        f"Contexto fornecido no upload '{source_name}': {clean_comment}",
+        {
+            "kind": "upload_comment",
+            "source_name": source_name,
+            "item_count": item_count,
+            "upload_batch_id": upload_batch_id or "",
+        },
+    )
 
 
 def read_chat_sessions_index(current_user: AuthenticatedUserContext) -> list[dict[str, Any]]:

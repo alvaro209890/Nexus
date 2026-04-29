@@ -3,6 +3,10 @@ export type UploadResponse = {
   classification: string;
   suggested_name: string;
   metadata: Record<string, unknown>;
+  source_archive_name?: string | null;
+  zip_entry_path?: string | null;
+  upload_batch_id?: string | null;
+  user_comment?: string;
   pdf_path: string;
   markdown_path: string;
   chunks_indexed: number;
@@ -87,6 +91,10 @@ export type DocumentRecord = {
   source_kind?: string;
   sha256: string;
   original_name: string;
+  source_archive_name?: string | null;
+  zip_entry_path?: string | null;
+  upload_batch_id?: string | null;
+  user_comment?: string;
   classification: string;
   document_type?: string | null;
   domain?: string | null;
@@ -177,6 +185,21 @@ export type NotePayload = {
   tags: string[];
 };
 
+export type NoteAssistPayload = {
+  raw_input: string;
+  current_title?: string;
+  current_content?: string;
+  current_tags?: string[];
+  mode?: "create" | "refine";
+};
+
+export type NoteAssistResponse = {
+  title: string;
+  content: string;
+  tags: string[];
+  summary: string;
+};
+
 const LOCAL_API_BASE = "http://127.0.0.1:18000";
 const PUBLIC_API_BASE = "https://nexus-api.cursar.space";
 
@@ -242,10 +265,12 @@ export async function syncAuthenticatedUser(token: string): Promise<Authenticate
 export async function uploadDocument(
   file: File,
   token: string,
+  uploadComment = "",
   onProgress?: (progress: number) => void
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("upload_comment", uploadComment);
 
   return new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -303,10 +328,12 @@ export async function uploadDocument(
 export async function uploadDocuments(
   files: File[],
   token: string,
+  uploadComment = "",
   onProgress?: (progress: number) => void
 ): Promise<UploadBatchResponse> {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
+  formData.append("upload_comment", uploadComment);
 
   return new Promise<UploadBatchResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -496,6 +523,15 @@ export async function createNote(payload: NotePayload, token: string): Promise<N
     body: JSON.stringify(payload)
   });
   return parseJsonResponse<NoteRecord>(response);
+}
+
+export async function assistNote(payload: NoteAssistPayload, token: string): Promise<NoteAssistResponse> {
+  const response = await fetch(`${resolveApiBase()}/notes/assist`, {
+    method: "POST",
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
+    body: JSON.stringify(payload)
+  });
+  return parseJsonResponse<NoteAssistResponse>(response);
 }
 
 export async function updateNote(
