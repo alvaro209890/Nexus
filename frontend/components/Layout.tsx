@@ -3,7 +3,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/router";
 import { useAuth } from "../contexts/AuthContext";
-import { LayoutDashboard, FileText, FolderTree, Search, MessageSquare, LogOut, Menu, X, User } from "lucide-react";
+import { AlertCircle, LayoutDashboard, FileText, FolderTree, Search, MessageSquare, LogOut, Menu, X, User } from "lucide-react";
 
 interface LayoutProps {
   children: ReactNode;
@@ -11,8 +11,13 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const router = useRouter();
-  const { user, logout, authSyncing } = useAuth();
+  const { user, authProfile, logout, authSyncing, error: authError } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const displayName = authProfile?.display_name || user?.displayName || authProfile?.email?.split("@")[0] || user?.email?.split("@")[0] || "Usuário";
+  const displayEmail = authProfile?.email || user?.email || "E-mail não disponível";
+  const userInitial = (displayName || displayEmail).charAt(0).toUpperCase();
+  const providerLabel = formatProvider(authProfile?.provider_ids?.[0]);
+  const shortUid = authProfile?.uid ? `${authProfile.uid.slice(0, 8)}...${authProfile.uid.slice(-4)}` : "";
 
   const navItems = [
     { label: "Início", path: "/", icon: <LayoutDashboard size={18} /> },
@@ -69,13 +74,19 @@ export default function Layout({ children }: LayoutProps) {
 
           {/* User Profile & Actions */}
           <div className="flex items-center gap-3">
-            <div className="hidden md:flex items-center gap-3 rounded-full bg-surface-strong px-4 py-1.5 border border-border-soft">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-soft text-xs font-bold uppercase text-accent">
-                {user?.email?.charAt(0) || "U"}
+            <div className="hidden min-w-0 items-center gap-3 rounded-full border border-border-soft bg-[var(--bg-surface-strong)] px-4 py-1.5 md:flex">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-bold uppercase text-accent">
+                {userInitial}
               </div>
-              <div className="overflow-hidden">
-                <p className="truncate text-sm font-medium m-0">{user?.email || "Usuário"}</p>
+              <div className="min-w-0 max-w-[16rem] overflow-hidden">
+                <p className="m-0 truncate text-sm font-semibold text-primary">{displayName}</p>
+                <p className="m-0 truncate text-[0.68rem] font-medium text-secondary">
+                  {displayEmail}
+                </p>
               </div>
+              <span className="rounded-full border border-border-soft px-2 py-0.5 text-[0.62rem] font-bold uppercase tracking-[0.08em] text-accent-strong">
+                {authSyncing ? "sync" : providerLabel}
+              </span>
             </div>
             
             <button 
@@ -117,9 +128,13 @@ export default function Layout({ children }: LayoutProps) {
               })}
               <div className="h-px bg-border-soft my-2" />
               <div className="flex items-center justify-between p-3 rounded-lg text-secondary">
-                <div className="flex items-center gap-3 truncate">
-                  <User size={18} />
-                  <span className="truncate">{user?.email || "Usuário"}</span>
+                <div className="flex min-w-0 items-center gap-3">
+                  <User size={18} className="shrink-0" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-primary">{displayName}</p>
+                    <p className="truncate text-xs text-secondary">{displayEmail}</p>
+                    {shortUid && <p className="truncate text-[0.68rem] text-muted">UID {shortUid}</p>}
+                  </div>
                 </div>
                 <button 
                   onClick={logout} 
@@ -135,6 +150,17 @@ export default function Layout({ children }: LayoutProps) {
       </header>
 
       <main className="page-container page-stack relative">
+        {authError && (
+          <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm font-medium text-danger">
+            <div className="flex items-start gap-3">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-bold">Dados do usuário não sincronizados</p>
+                <p className="mt-1 text-danger/90">{authError}</p>
+              </div>
+            </div>
+          </div>
+        )}
         {children}
       </main>
 
@@ -150,4 +176,11 @@ export default function Layout({ children }: LayoutProps) {
       )}
     </div>
   );
+}
+
+function formatProvider(providerId?: string): string {
+  if (!providerId) return "conta";
+  if (providerId === "password") return "senha";
+  if (providerId === "google.com") return "google";
+  return providerId.replace(".com", "");
 }

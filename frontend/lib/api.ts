@@ -81,8 +81,13 @@ export type AuthenticatedUserProfile = {
   profile_path: string;
   originals_dir: string;
   markdown_dir: string;
+  incoming_dir?: string;
   manifest_path: string;
+  folders_path?: string;
+  processing_events_dir?: string;
   memory_dir: string;
+  notes_dir?: string;
+  note_versions_dir?: string;
   collection_name: string;
 };
 
